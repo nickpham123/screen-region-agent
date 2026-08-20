@@ -1,0 +1,34 @@
+# To-Do
+
+Concrete next actions, not aspirational plans (those live in `implementation_plan.md`). Keep this short — if it grows past ~10 items, it's turning back into a plan document; prune or move stale items to phase_log.md's log section.
+
+## Now — Electron scaffold (per system_design_plan.md's verification-step plan)
+
+- [x] Step 1: Scaffold minimal Electron app (main process + one window) → verify: app launches, shows a blank window
+- [x] Step 2: Add `globalShortcut` hotkey press listener + immediate focus-grab on the overlay window → verify: pressing the key while any app is focused brings up a (blank for now) overlay that has keyboard focus
+- [ ] Step 3: Add window-scoped keyup detection on the overlay + mouse drag-to-select while the key is held, plus a "ready to select" badge on activation → verify: pressing the key shows the badge immediately; dragging draws a freeform path with a live bounding-box preview updating in real time (badge fades once dragging begins); releasing the key (not the mouse) finalizes and logs the bbox coordinates
+- [ ] Step 4: Add `desktopCapturer` + crop logic → verify: releasing the drag saves a cropped PNG of that exact region
+- [ ] Step 5: Add the Chat Panel — text field auto-focused, message history list (starts empty), same key held again (window-scoped) triggers `whisper-node-addon` recording → verify: typing + Enter adds a message to history; holding the key and speaking transcribes into the field with no network call made
+- [ ] Step 6: Port `askAboutRegion(imagePath, conversationHistory)` to JS → verify: a real screenshot + single-turn history returns a real Mistral answer; a second call with the growing history returns a coherent follow-up answer
+      - Implementation note: use a stable `prompt_cache_key` per session (keep the prefix — system prompt + image + prior turns — byte-identical across calls, only append the new turn) and downscale the crop before encoding — both cut token cost without limiting conversation length (see system_design_plan.md §3.5)
+      - Implementation note: send a downscaled full-screenshot thumbnail alongside the crop on every call, plus a `requestFullScreenshot()` tool the model can invoke for full-resolution context when the thumbnail isn't enough (hybrid approach, see system_design_plan.md §3.5)
+- [ ] Step 7: Wire Chat Panel submit → Response Handler → Vision Model Client → append answer to history → verify: full loop works for at least 2 back-and-forth turns in one session
+- [ ] Step 8: On panel close, write the full turn history via Local Logger → verify: closing the panel produces one JSONL/SQLite row with all turns nested under it (schema in data_pipeline.md §1-2)
+
+## Cleanup
+
+- [ ] Delete the superseded Python prototype files (`capture.py`, `hotkey_listener.py`, `overlay.py`, `popup.py`, `main.py`, `requirements.txt`) once Electron reaches equivalent functionality
+
+## Next (after Phase 1 loop works end to end)
+
+- [ ] Add 👍/👎 feedback capture to the Chat Panel, captured once per conversation on close
+- [ ] Decide the Phase 3 format-conversion approach for multi-turn sessions (flatten to single-turn training rows vs. train for full multi-turn — see data_pipeline.md §8)
+
+## Later / deferred — not blocking current work
+
+- [ ] Marketing/dashboard website introducing the product, cluely.com-inspired — come back to this once Phase 1 has something worth showing off
+
+## Open questions blocking later phases
+
+- [ ] Whether `image_context` (full screenshot) is always sent alongside the crop, or only conditionally — now relevant per-turn, not just once per session
+- [ ] Which whisper.cpp model size to bundle (base.en vs small.en — accuracy/size/speed tradeoff) and how the model file gets distributed with the packaged app

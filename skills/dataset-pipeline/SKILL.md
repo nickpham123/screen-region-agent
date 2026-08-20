@@ -1,0 +1,54 @@
+---
+name: dataset-pipeline
+description: Use this skill when logging usage data, curating/cleaning examples, generating synthetic training data, or preparing a dataset for fine-tuning the screen-region agent's vision model. Covers the schema, the clean/filter workflow, and the train/eval split rule.
+---
+
+# Dataset Pipeline Skill
+
+Full detail lives in `data_pipeline.md` at the project root — this is the quick-reference version for doing the work.
+
+## The schema (every record, real or synthetic)
+
+```json
+{
+  "id": "uuid",
+  "image_crop": "path/to/crop.png",
+  "image_context": "path/to/full.png or null",
+  "app_hint": "vscode | browser | pdf | ... | null",
+  "question": "string",
+  "answer": "string",
+  "category": "code | chart | ui | text | math | translation",
+  "feedback": "thumbs_up | thumbs_down | null",
+  "source": "real_usage | synthetic",
+  "timestamp": "ISO datetime"
+}
+```
+
+Every logging call, real or synthetic, writes this exact shape. Don't invent per-purpose variants — downstream fine-tuning code depends on this being consistent.
+
+## Workflow: cleaning real usage data
+
+1. Pull all logged interactions
+2. 👍 examples → usable as-is
+3. 👎 examples → don't discard by default. Hand-edit the `answer` field into something correct — the image+question pairing is still valuable even when the original answer wasn't
+4. Drop: near-duplicate crops, corrupted images, empty/refused answers
+
+## Workflow: generating synthetic examples
+
+1. Identify underrepresented categories (check the category distribution in current logged data)
+2. Screenshot real examples of that category yourself
+3. Use the active vision backend (see `vision-backend` skill) as an "oracle" to draft a candidate answer
+4. **Always review/edit before adding** — never add oracle output straight to the training pool untouched
+5. Tag `source: synthetic`
+
+## The one rule that matters most: frozen eval set
+
+The moment you have enough data (~30-50 examples spanning every category), carve out a held-out eval set and **never train on it, ever, in any future round**. This is what makes it possible to tell whether a fine-tune actually helped, versus just measuring memorization of the training set. If this rule gets violated even once, the eval numbers from then on are meaningless.
+
+## Versioning
+
+Simple is fine: `dataset_v1.jsonl`, `dataset_v2.jsonl`, etc. The goal is just being able to answer "which dataset produced this checkpoint" when comparing fine-tune runs later.
+
+## Format conversion for training
+
+The schema above is the logging/storage format — it is NOT the format Unsloth/HF expect for training. Conversion to conversation-turn + image format happens as a separate deterministic script, run once per dataset version, right before kicking off a fine-tune job.
