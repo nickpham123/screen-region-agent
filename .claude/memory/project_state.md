@@ -24,8 +24,10 @@ See `.claude/memory/decisions.md` — "App shell: Electron" — for why. Safe to
 - ~~Focus instability on activation~~ — **retracted 2026-08-21**, was an artifact of multiple Electron instances competing for the accelerator and focus during testing. Confirmed directly: one keypress logged by five separate instances within 2ms. Clean single-instance measurement: `isFocused` `true` on 32 of 33 gestures, vs `false` on 6 of 8 contaminated. See decisions.md §4.
 - **Selection overlay is deaf whenever the hotkey is unregistered.** The accelerator comes off for the whole duration of a gesture including a hung one, so hotkey presses during that window do nothing. Now bounded to ~2.5s rather than 5s, but not eliminated.
 
+- Single-instance lock (`app.requestSingleInstanceLock()`, acquired before `app.whenReady()`) — a second launch exits before creating a window or registering the accelerator, logging the `pkill` recovery command; the primary logs the blocked attempt and shows no UI. Guards a confirmed failure mode where concurrent instances all registered the same accelerator and fought over focus. Tested by deliberate double-launch. Marked in code as the hook where Step 5 should focus the Chat Panel instead.
+
 ## Planned but not built (current design)
-- `desktopCapturer`-based screen capture + crop logic
+- **Step 4 — `desktopCapturer`-based screen capture + crop logic (next unstarted item)**
 - **Chat Panel** — merged question+answer interface, multi-turn, text + voice input (voice via `whisper-node-addon`/whisper.cpp, on-device, held with the same key used for region selection)
 - JS port of `askAboutRegion(imagePath, conversationHistory)` (Mistral API call via HTTP, multi-turn)
 - Local logging module — schema is now per-conversation with nested turns, not per-question (see `data_pipeline.md`), no code yet
