@@ -26,8 +26,11 @@ function createWindow() {
   win.loadFile('index.html');
 }
 
-// v1 scope: primary display only. See decisions.md — multi-monitor would
-// need one overlay window per screen.getAllDisplays() entry; not built yet.
+// Initial bounds only — the overlay is repositioned to the cursor's display
+// on every activation (see registerHotkey). The primary display is just a
+// sensible starting position for a window that is never shown until then.
+// Still one window, not one per display: full simultaneous multi-monitor
+// rendering remains out of scope (see decisions.md).
 function createOverlayWindow() {
   const { x, y, width, height } = screen.getPrimaryDisplay().bounds;
 
@@ -48,6 +51,16 @@ function createOverlayWindow() {
       preload: path.join(__dirname, 'preload.js'),
     },
   });
+
+  // macOS runs a separate Space per display by default ("Displays have
+  // separate Spaces"). Without this, an overlay moved to the secondary
+  // display renders and receives mouse events but never becomes the *key*
+  // window: `app.focus({steal:true})` activates the app and macOS gives key
+  // status to a window on the currently active Space — which is the other
+  // display's, where the Step 1 placeholder window still lives. Symptom was
+  // a trail that drew normally and then died at the 2.5s no-key-event
+  // deadline while the user was still holding.
+  overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
   overlayWindow.loadFile('overlay.html');
 }
@@ -196,6 +209,24 @@ function registerHotkey() {
 
     setTimeout(() => {
       const cursor = screen.getCursorScreenPoint();
+
+      // Move the overlay to whichever display the cursor is on, per
+      // activation. The gesture is a mouse drag, so cursor position — not
+      // window focus, not the "main" display — is the direct signal for which
+      // screen the user is about to act on. One built-in Electron call, no
+      // Accessibility permission, no extra plumbing.
+      //
+      // Note this reuses getCursorScreenPoint(), which was measured returning
+      // a ~29px-stale position when the cursor is moving fast (see the
+      // activation-trail bug in decisions.md). Accepted deliberately here:
+      // display selection only breaks if the cursor crosses a display
+      // boundary within a few ms of the keypress, and the consequence would
+      // be a one-off overlay on the neighbouring screen, not a wrong crop.
+      const display = screen.getDisplayNearestPoint(cursor);
+      overlayWindow.setBounds(display.bounds);
+
+      // Read bounds back after the move, so the cursor-relative activation
+      // point is expressed against the display the overlay now occupies.
       const bounds = overlayWindow.getBounds();
       overlayWindow.webContents.send('activate', {
         x: cursor.x - bounds.x,
