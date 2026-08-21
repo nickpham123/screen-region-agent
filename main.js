@@ -225,11 +225,40 @@ function registerHotkey() {
   }
 }
 
-app.whenReady().then(() => {
-  createWindow();
-  createOverlayWindow();
-  registerHotkey();
-});
+// Single-instance guard. Structural fix for a confirmed failure mode: during
+// Step 3 debugging, each round launched a new app without quitting the last,
+// and a single physical keypress was observed firing in five separate
+// instances within 2ms — every one of them had registered the same
+// accelerator and called app.focus({steal:true}) on its own overlay. They
+// fought over focus, which looked convincingly like an Electron focus bug and
+// cost real time to diagnose (see decisions.md).
+//
+// Acquired here, before app.whenReady(), so a second instance exits before it
+// can create a window or register the accelerator at all — the damage happens
+// at registration, not later.
+//
+// Tradeoff accepted: a stale instance now makes `npm start` appear to do
+// nothing instead of silently corrupting results. That is better, but only if
+// the failure is legible — hence logging the recovery command rather than
+// exiting quietly.
+if (!app.requestSingleInstanceLock()) {
+  log('Another instance is already running — exiting.');
+  log('  Recover with: pkill -f "screen-region-agent/node_modules/electron"');
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    // Nothing to raise today: the overlay is a transient gesture surface, not
+    // a window to show outside a gesture. At Step 5 the Chat Panel becomes the
+    // right thing to focus here.
+    log('A second instance tried to launch and was blocked by the single-instance lock.');
+  });
+
+  app.whenReady().then(() => {
+    createWindow();
+    createOverlayWindow();
+    registerHotkey();
+  });
+}
 
 ipcMain.on('debug-log', (event, msg) => log('[renderer]', msg));
 
