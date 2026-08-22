@@ -45,6 +45,11 @@ function resetState(initialPoint) {
   resizeCanvas();
   resetTrackingPoints(initialPoint.x, initialPoint.y);
 
+  // Restore the CSS-defined fade for this new gesture. The previous
+  // gesture's keyup handler force-disables it for an instant (not faded)
+  // hide before capture — undoing that here keeps this gesture's own
+  // fade-on-movement behaving normally instead of silently regressing.
+  badge.style.transition = '';
   badge.style.left = `${initialPoint.x}px`;
   badge.style.top = `${initialPoint.y}px`;
   badge.style.opacity = '1';
@@ -229,6 +234,23 @@ document.addEventListener('keyup', (e) => {
   if (e.code !== triggerKeyCode) return;
   spaceHeld = false;
 
+  // Clear every piece of visible overlay content before finalizing, so a
+  // capture that follows this can never bake in the trail/badge/reset-flash.
+  // Deterministic (content-based), not a timing guess — see decisions.md for
+  // why a guessed post-hide() settle delay was tried first and rejected.
+  trailCtx.clearRect(0, 0, trailCanvas.width, trailCanvas.height);
+  // #badge has a CSS `transition: opacity 0.15s ease` (overlay.html) — setting
+  // opacity alone would start a 150ms fade, not an instant hide. Disabling
+  // the transition first makes the disappearance immediate.
+  badge.style.transition = 'none';
+  badge.style.opacity = '0';
+  // #resetFlash has no `transition` of its own — its fade is a `.flash`
+  // class `animation`, which stops immediately when the class is removed, no
+  // disable-first trick needed. Zeroing opacity too is belt-and-suspenders,
+  // not load-bearing.
+  resetFlashEl.classList.remove('flash');
+  resetFlashEl.style.opacity = '0';
+
   const width = maxX - minX;
   const height = maxY - minY;
 
@@ -238,4 +260,51 @@ document.addEventListener('keyup', (e) => {
   }
 
   window.overlayAPI.finalizeSelection({ x: minX, y: minY, width, height });
+});
+
+// Step 4: main hands us a desktopCapturer source id it has already matched
+// to the right display (see capture.js) and asks for one raw frame. This
+// side does no geometry math — just capture, draw, hand back a data URL.
+//
+// Dimensions come from the video element's own videoWidth/videoHeight, never
+// from track.getSettings() — measured 2026-08-22 to return stale dimensions
+// (the previous capture's) on the second getUserMedia() call in a renderer
+// session, which this app's long-lived overlay renderer will hit across
+// gestures. See decisions.md.
+window.overlayAPI.onCaptureRequest(async ({ sourceId }) => {
+  let track;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        mandatory: {
+          chromeMediaSource: 'desktop',
+          chromeMediaSourceId: sourceId,
+        },
+      },
+    });
+    track = stream.getVideoTracks()[0];
+
+    const video = document.createElement('video');
+    video.srcObject = stream;
+    await new Promise((resolve) => { video.onloadedmetadata = resolve; });
+    await video.play();
+    // Let the decoder produce a real frame before drawing — same reasoning
+    // as diagnostics/verify_capture_renderer.js.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    const width = video.videoWidth;
+    const height = video.videoHeight;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    canvas.getContext('2d').drawImage(video, 0, 0, width, height);
+
+    window.overlayAPI.captureResult({ dataUrl: canvas.toDataURL('image/png') });
+  } catch (err) {
+    window.overlayAPI.captureResult({ error: err.message || String(err) });
+  } finally {
+    if (track) track.stop();
+  }
 });

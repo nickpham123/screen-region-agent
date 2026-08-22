@@ -13,4 +13,9 @@ contextBridge.exposeInMainWorld('overlayAPI', {
   // Routes renderer-side logging to the main process terminal, where the
   // rest of the app's log output goes.
   debugLog: (msg) => ipcRenderer.send('debug-log', msg),
+  // Step 4: main asks this renderer to actually run getUserMedia() (a Web
+  // API, unavailable in the main process) and hands back one raw frame.
+  // No geometry decisions happen on this side of the bridge — see capture.js.
+  onCaptureRequest: (callback) => ipcRenderer.on('capture-request', (event, payload) => callback(payload)),
+  captureResult: (result) => ipcRenderer.send('capture-result', result),
 });

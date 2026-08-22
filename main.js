@@ -1,5 +1,6 @@
 const { app, BrowserWindow, globalShortcut, ipcMain, screen } = require('electron');
 const path = require('path');
+const { createCaptureRegion } = require('./capture');
 
 // Timestamped logging — makes separate gestures distinguishable in the log,
 // which mattered a lot while debugging the hotkey release path.
@@ -12,6 +13,15 @@ function log(...args) {
 // basis for the Chat Panel at Step 5.
 let win;
 let overlayWindow;
+let captureRegion;
+
+// Which display the current/most recent gesture's overlay was shown on —
+// set once at activation (screen.getDisplayNearestPoint, already computed
+// fresh there) and read at finalize time by captureRegion(). Re-deriving
+// "which display" a second time at finalize, instead of threading this
+// through, would risk disagreeing with activation's answer if the cursor
+// moved off that display mid-drag — see decisions.md.
+let activeDisplayId = null;
 
 function createWindow() {
   win = new BrowserWindow({
@@ -137,6 +147,18 @@ const UNREGISTER_SETTLE_MS = 50;
 // keydowns arrive and this degrades to the old fixed-deadline behavior.
 const STUCK_GESTURE_TIMEOUT_MS = 5000;
 
+// Bounds the ENTIRE captureRegion() call (found during Step 4 self-review,
+// 2026-08-22): capture.js's own CAPTURE_TIMEOUT_MS only covers the renderer
+// round-trip inside it, not the permission check or desktopCapturer.getSources()
+// before it. Without this, a hang in either would leave the hotkey
+// unregistered indefinitely — the exact "stuck, unregistered hotkey" failure
+// class STUCK_GESTURE_TIMEOUT_MS above already exists to eliminate, just for
+// the hold-gesture phase instead of the post-finalize capture phase. Reusing
+// that constant's value here rather than inventing a fresh unexplained
+// number, plus a margin for the getSources()/permission-check step that
+// isn't otherwise bounded by capture.js's own internal timeout.
+const CAPTURE_OVERALL_TIMEOUT_MS = STUCK_GESTURE_TIMEOUT_MS + 2000;
+
 // Separate, shorter deadline for the *first* trigger-key event of a gesture.
 //
 // globalShortcut consumes the trigger key's original keydown to fire the
@@ -223,6 +245,7 @@ function registerHotkey() {
       // boundary within a few ms of the keypress, and the consequence would
       // be a one-off overlay on the neighbouring screen, not a wrong crop.
       const display = screen.getDisplayNearestPoint(cursor);
+      activeDisplayId = display.id;
       overlayWindow.setBounds(display.bounds);
 
       // Read bounds back after the move, so the cursor-relative activation
@@ -287,6 +310,7 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(() => {
     createWindow();
     createOverlayWindow();
+    captureRegion = createCaptureRegion(overlayWindow);
     registerHotkey();
   });
 }
@@ -305,15 +329,54 @@ ipcMain.on('gesture-alive', () => {
   armStuckGestureTimer();
 });
 
-ipcMain.on('selection-finalized', (event, bbox) => {
+ipcMain.on('selection-finalized', async (event, bbox) => {
   clearStuckGestureTimer();
 
-  if (bbox) {
-    log('Selection finalized:', bbox);
-  } else {
+  if (!bbox) {
     log('Selection ignored (below minimum size)');
+    overlayWindow.hide();
+    registerHotkey();
+    return;
   }
+
+  log('Selection finalized:', bbox);
+
+  // Hide for hygiene only — not load-bearing for capture correctness. The
+  // overlay renderer already clears its own drawn trail/badge/reset-flash
+  // synchronously on keyup, before this IPC message is even sent (see
+  // overlay.js), so there is no visible overlay content left to bake into a
+  // screenshot regardless of when hide() visually takes effect. An earlier
+  // version of this handler used a guessed settle delay after hide() instead
+  // — rejected on review as an unverified magic number, the same shape of
+  // problem already on record for UNREGISTER_SETTLE_MS. See decisions.md.
   overlayWindow.hide();
+
+  // The hotkey stays unregistered for the duration of this (re-registered
+  // below, same as every other path through this handler), so there's never
+  // a second gesture's capture request in flight at the same time.
+  try {
+    const { cropPath, fullPath } = await Promise.race([
+      captureRegion(bbox, activeDisplayId),
+      new Promise((_resolve, reject) =>
+        setTimeout(
+          () => reject(new Error(`captureRegion exceeded ${CAPTURE_OVERALL_TIMEOUT_MS}ms`)),
+          CAPTURE_OVERALL_TIMEOUT_MS
+        )
+      ),
+    ]);
+    log('Captured region — crop:', cropPath, ' full:', fullPath);
+  } catch (err) {
+    log('captureRegion failed:', err.message || err);
+    // Promise.race doesn't cancel the losing side. If this rejection came
+    // from the overall timeout above (not from inside captureRegion itself),
+    // the abandoned call may still be mid-flight and could still be holding
+    // capture.js's ipcMain.once('capture-result', ...) listener. Clear it so
+    // a late reply from this abandoned call can't be mistaken for the next
+    // gesture's own capture result. Harmless to call unconditionally — in
+    // the normal-completion case there's nothing left to remove.
+    ipcMain.removeAllListeners('capture-result');
+  }
+
   registerHotkey();
 });
 
