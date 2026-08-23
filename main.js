@@ -1,6 +1,8 @@
 const { app, BrowserWindow, globalShortcut, ipcMain, screen } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const { createCaptureRegion } = require('./capture');
+const { nodewhisper } = require('nodejs-whisper');
 
 // Timestamped logging — makes separate gestures distinguishable in the log,
 // which mattered a lot while debugging the hotkey release path.
@@ -14,6 +16,18 @@ function log(...args) {
 let win;
 let overlayWindow;
 let captureRegion;
+// The Chat Panel is created fresh per session and closed (not hidden) when
+// the session ends — see createChatPanelWindow(). Tracked at module level
+// only so the single-instance guard's second-instance handler (below) can
+// raise it instead of doing nothing, per the TODO already left there in
+// Step 3. Never reused across sessions.
+let chatPanelWindow = null;
+// True only while the accelerator is unregistered for an in-progress
+// hold-to-talk press — lets the Chat Panel's 'closed' handler recover
+// immediately (re-register now) if the window closes mid-hold, rather than
+// waiting out the watchdog below. See registerHotkey()'s chatPanelWindow
+// guard and createChatPanelWindow()'s 'closed' handler.
+let holdToTalkActive = false;
 
 // Which display the current/most recent gesture's overlay was shown on —
 // set once at activation (screen.getDisplayNearestPoint, already computed
@@ -73,6 +87,230 @@ function createOverlayWindow() {
   overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
   overlayWindow.loadFile('overlay.html');
+}
+
+// Where a session's crop/full images live once a real conversation happened
+// and they've been moved out of temp — see moveFile()/endChatSession() and
+// decisions.md's temp-file-lifecycle row. Created lazily (only once a
+// session actually needs it), not at startup.
+const CAPTURES_DIR = path.join(app.getPath('userData'), 'captures');
+
+// Moves one file out of temp into permanent storage. Prefers a plain
+// rename() (atomic, no double-write) but falls back to copy+unlink on
+// EXDEV — rename() can throw that if temp and userData ever end up on
+// different filesystems/volumes. Not hypothetical enough to skip: silently
+// losing the image a logged conversation record points at is exactly the
+// failure the whole temp-file-lifecycle invariant exists to prevent.
+function moveFile(src, dest) {
+  try {
+    fs.renameSync(src, dest);
+  } catch (err) {
+    if (err.code !== 'EXDEV') throw err;
+    fs.copyFileSync(src, dest);
+    fs.unlinkSync(src);
+  }
+}
+
+// Hold-to-talk voice transcription (system_design_plan.md §3.4, decisions.md
+// 2026-08-23's backend evaluation — nodejs-whisper, replacing whisper-node-addon).
+//
+// Ephemeral, unlike crop.png/full.png: the data model (system_design_plan.md
+// §5) only stores a turn's transcribed *text*, never the audio itself, so
+// these WAV files have no temp-file-lifecycle invariant to satisfy — each is
+// deleted immediately after this handler is done with it, success or
+// failure, not routed through moveFile()/endChatSession() at all. Still
+// given a dedicated subfolder rather than the OS temp root directly, for the
+// same reason capture.js's screenshots are: consistency, and it costs
+// nothing.
+const VOICE_TMP_DIR = path.join(app.getPath('temp'), 'screen-region-voice');
+
+// Floor on actual CAPTURED AUDIO duration, not raw press-to-release hold
+// time — those aren't the same thing. A genuine single-word utterance
+// ("yes", "stop") can involve a short hold that still contains a full
+// word's worth of real audio; gating on hold-duration would risk silently
+// discarding real speech, which is worse than the accidental-tap problem
+// this exists to solve. Not tuned to "average utterance length" — just
+// enough to filter a near-zero-audio accidental brush of the key.
+const MIN_VOICE_DURATION_MS = 200;
+
+// Builds a valid 16kHz mono 16-bit PCM WAV file in memory from raw Float32
+// samples. Written by hand rather than relying on nodejs-whisper's own
+// built-in conversion (which shells out to ffmpeg for anything that isn't
+// already a valid WAV — confirmed by reading its source, decisions.md) —
+// ffmpeg isn't installed here, and adding it would be a second Phase 7
+// packaging dependency stacked on top of the one whisper-cli itself already
+// needs (see todo.md). A WAV header is 44 fixed bytes; not worth a
+// dependency to avoid writing it once.
+function floatTo16BitWav(samples, sampleRate) {
+  const numSamples = samples.length;
+  const buffer = Buffer.alloc(44 + numSamples * 2);
+  buffer.write('RIFF', 0);
+  buffer.writeUInt32LE(36 + numSamples * 2, 4);
+  buffer.write('WAVE', 8);
+  buffer.write('fmt ', 12);
+  buffer.writeUInt32LE(16, 16); // PCM fmt chunk size
+  buffer.writeUInt16LE(1, 20); // format = PCM
+  buffer.writeUInt16LE(1, 22); // channels = mono
+  buffer.writeUInt32LE(sampleRate, 24);
+  buffer.writeUInt32LE(sampleRate * 2, 28); // byte rate (mono, 16-bit)
+  buffer.writeUInt16LE(2, 32); // block align
+  buffer.writeUInt16LE(16, 34); // bits per sample
+  buffer.write('data', 36);
+  buffer.writeUInt32LE(numSamples * 2, 40);
+  let offset = 44;
+  for (let i = 0; i < numSamples; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    buffer.writeInt16LE(Math.round(s < 0 ? s * 0x8000 : s * 0x7fff), offset);
+    offset += 2;
+  }
+  return buffer;
+}
+
+// nodejs-whisper's own type declaration claims Promise<string[][]>, but this
+// was checked directly (`typeof`/`Array.isArray` against a real call, not
+// just read from the diagnostic's printed output) and confirmed to actually
+// return a plain timestamped string — e.g.
+// "\n[00:00:00.000 --> 00:00:02.460]   Testing the Region Agent Voice input.\n".
+// The string branch below is what real calls take; the array branch is kept
+// as cheap insurance against the documented-but-unobserved shape, in case a
+// future version of the package changes to match its own types — not
+// exercised in practice, not worth deleting for that.
+function extractTranscriptText(raw) {
+  let text;
+  if (typeof raw === 'string') {
+    text = raw;
+  } else if (Array.isArray(raw)) {
+    text = raw.map((row) => (Array.isArray(row) ? row[row.length - 1] : String(row))).join(' ');
+  } else {
+    text = String(raw);
+  }
+  return text.replace(/^\s*\[\d{2}:\d{2}:\d{2}\.\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}\.\d{3}\]\s*/, '').trim();
+}
+
+// Chat Panel (system_design_plan.md §3.4) — window lifecycle, the temp-file
+// lifecycle invariant, hold-to-talk key mechanics, and text/voice input +
+// message history are all built; see chatPanel.html for the renderer side.
+//
+// Created fresh per session, closed (not hidden) when the session ends —
+// approved over reusing one window like the overlay: "history starts empty"
+// is then free (a fresh page load) instead of something to manually reset,
+// and the window's own 'closed' event is a single unambiguous trigger for
+// the temp-file move-or-delete decision below, with no risk of state
+// leaking across sessions the way track.getSettings() and the capture
+// requestId race both did (see decisions.md) — this codebase has hit that
+// bug shape twice already.
+function createChatPanelWindow(cropPath, fullPath, displayId) {
+  const display = screen.getAllDisplays().find((d) => d.id === displayId) || screen.getPrimaryDisplay();
+  const width = 420;
+  const height = 640;
+
+  chatPanelWindow = new BrowserWindow({
+    x: Math.round(display.bounds.x + (display.bounds.width - width) / 2),
+    y: Math.round(display.bounds.y + (display.bounds.height - height) / 2),
+    width,
+    height,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      preload: path.join(__dirname, 'chatPanelPreload.js'),
+    },
+  });
+
+  // Same fix the Selection Overlay needed (decisions.md): a window shown on
+  // a display other than the currently active Space renders and takes mouse
+  // events but never becomes the *key* window, so typing would silently do
+  // nothing. Set once here at creation — since this window is created fresh
+  // per session and never reused, "once at creation" already covers every
+  // session, unlike the overlay where it only had to run once total.
+  chatPanelWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+
+  chatPanelWindow.loadFile('chatPanel.html');
+
+  chatPanelWindow.show();
+  // Same reasoning as the overlay's activation: .focus() alone doesn't
+  // reliably win real OS focus-steal on macOS when the app isn't already
+  // frontmost.
+  app.focus({ steal: true });
+  chatPanelWindow.focus();
+
+  // Turns accumulate here as the panel's real UI sends them (wired in the
+  // next slice, via 'chat-turn-added'). Tracked in this closure, not a
+  // module-level variable, so a session's state can never leak into
+  // another's. The sender check is currently unreachable — only one Chat
+  // Panel can exist at a time, since a Control+1 press while one is open is
+  // guarded to focus it instead of starting a second gesture (see
+  // registerHotkey()'s chatPanelWindow check) — but it's one line of cheap
+  // insurance against exactly the crosstalk this codebase would get if that
+  // guard were ever bypassed and two listeners on the same channel both
+  // fired.
+  const turns = [];
+  function onTurnAdded(event, turn) {
+    if (event.sender.id !== chatPanelWindow.webContents.id) return;
+    turns.push(turn);
+  }
+  ipcMain.on('chat-turn-added', onTurnAdded);
+
+  chatPanelWindow.on('closed', () => {
+    ipcMain.removeListener('chat-turn-added', onTurnAdded);
+    if (holdToTalkActive) {
+      // Window closed mid-hold — the accelerator is unregistered and no
+      // more events for this now-gone window are coming, so there's no
+      // reason to wait out the watchdog. Recover immediately instead.
+      clearHoldToTalkWatchdog();
+      holdToTalkActive = false;
+      log('Chat Panel closed while hold-to-talk was active — re-registering hotkey immediately.');
+      registerHotkey();
+    }
+    chatPanelWindow = null;
+    endChatSession(cropPath, fullPath, turns);
+  });
+}
+
+// The core invariant from decisions.md's temp-file-lifecycle row: exactly
+// one of {move to permanent storage} or {delete}, never neither, never
+// both. turns.length === 0 means no real conversation happened this
+// session (a capture opened but the panel closed with nothing submitted).
+//
+// Does NOT touch hotkey registration. The accelerator is never unregistered
+// for the session's duration in the first place (see registerHotkey()'s
+// chatPanelWindow guard) — only during the gesture+capture phase, same as
+// always. Revised into this shape after review: the first version
+// unregistered for the whole session and re-registered here, which (a)
+// made a Control+1 press while the panel was open a structurally silent
+// no-op — no callback ever fired, so there was no hook left to give
+// feedback from — and (b) stranded the hotkey indefinitely with no
+// watchdog if this function ever failed to run. See decisions.md.
+function endChatSession(cropPath, fullPath, turns) {
+  if (turns.length === 0) {
+    log('Chat Panel closed with no turns — discarding temp captures.');
+    for (const p of [cropPath, fullPath]) {
+      try {
+        fs.unlinkSync(p);
+      } catch (err) {
+        log('Failed to delete temp capture:', p, err.message);
+      }
+    }
+  } else {
+    try {
+      fs.mkdirSync(CAPTURES_DIR, { recursive: true });
+      const permCropPath = path.join(CAPTURES_DIR, path.basename(cropPath));
+      const permFullPath = path.join(CAPTURES_DIR, path.basename(fullPath));
+      moveFile(cropPath, permCropPath);
+      moveFile(fullPath, permFullPath);
+      log(
+        `Chat Panel closed with ${turns.length} turn(s) — moved to permanent storage:`,
+        permCropPath, permFullPath
+      );
+      // TODO(Step 8): call the real Local Logger's logConversation() here,
+      // using permCropPath/permFullPath — never the original temp paths —
+      // once it exists. This branch is reachable now (text/voice input both
+      // call submitTurn() — see chatPanel.html) and has fired for real in
+      // testing; the TODO is only that the actual DB/JSONL write is Step 8's
+      // job, not that this code path is unused.
+    } catch (err) {
+      log('Failed to move captures to permanent storage:', err.message);
+    }
+  }
 }
 
 // INTERIM value — ergonomically poor (3 keys, the same one-handed problem
@@ -214,10 +452,98 @@ function clearStuckGestureTimer() {
   stuckGestureTimer = null;
 }
 
+// Liveness watchdog for hold-to-talk, structurally identical to the gesture
+// one above but kept as separate state rather than shared: the two can
+// never actually be in flight at once (chatPanelWindow is either null or
+// not, and each path requires the opposite), but they end differently on
+// timeout (cancel a drawn overlay gesture vs. cancel an in-progress
+// recording in the Chat Panel) — mixing them into one timer would mean
+// branching on "which kind of hold is this" inside a single callback for no
+// real benefit. Constants (STUCK_GESTURE_TIMEOUT_MS, INITIAL_KEY_DEADLINE_MS)
+// are reused as-is, not reinvented: the same two-stage reasoning applies
+// unchanged — Digit1 is claimed by the accelerator the same way for a
+// hold-to-talk press as for a gesture press (confirmed 2026-08-23, see
+// decisions.md), so the same ~445ms-until-auto-repeat blind window and the
+// same "5s of silence, not 5s total" logic both carry over directly.
+let holdToTalkWatchdog = null;
+let seenHoldToTalkKey = false;
+
+function armHoldToTalkWatchdog() {
+  clearTimeout(holdToTalkWatchdog);
+  const timeout = seenHoldToTalkKey ? STUCK_GESTURE_TIMEOUT_MS : INITIAL_KEY_DEADLINE_MS;
+  holdToTalkWatchdog = setTimeout(() => {
+    holdToTalkWatchdog = null;
+    log(
+      seenHoldToTalkKey
+        ? `[hold-to-talk] No trigger-key activity for ${STUCK_GESTURE_TIMEOUT_MS}ms — force-closing.`
+        : `[hold-to-talk] No trigger-key event at all within ${INITIAL_KEY_DEADLINE_MS}ms — key was likely released before auto-repeat began; force-closing.`
+    );
+    holdToTalkActive = false;
+    // Guard, not redundant: the panel could have been closed out from under
+    // an active hold (its own 'closed' handler clears this watchdog and
+    // re-registers immediately in that case — see createChatPanelWindow) —
+    // but a genuinely stuck hold with the panel still open needs this path.
+    if (chatPanelWindow) {
+      chatPanelWindow.webContents.send('hold-to-talk-cancel');
+    }
+    registerHotkey();
+  }, timeout);
+}
+
+function clearHoldToTalkWatchdog() {
+  clearTimeout(holdToTalkWatchdog);
+  holdToTalkWatchdog = null;
+}
+
 function registerHotkey() {
   for (const { accelerator, triggerKeyCode } of ACCELERATOR_CANDIDATES) {
     const registered = globalShortcut.register(accelerator, () => {
     log(`Hotkey pressed [${accelerator}] — waiting on keyup of ${triggerKeyCode}`);
+
+    // A Chat Panel session is already open — checked here, before anything
+    // else. Deliberately keeping the accelerator registered throughout the
+    // session rather than unregistering for its whole duration: that
+    // alternative was tried first and rejected on review — it made a press
+    // while blocked a structurally silent no-op (no callback ever fires, so
+    // there's no hook to react from) and stranded the hotkey indefinitely
+    // with no watchdog if the session ever failed to close cleanly. See
+    // decisions.md. What happens next depends on whether the panel actually
+    // has focus right now:
+    if (chatPanelWindow) {
+      if (chatPanelWindow.isFocused()) {
+        // Hold-to-talk: the same physical key, held again once the panel
+        // already has real OS focus (system_design_plan.md §3.4,
+        // decisions.md). Mirrors the region-selection gesture mechanism
+        // exactly, for the same underlying reason: Digit1 is claimed by
+        // the accelerator here too — confirmed empirically 2026-08-23 (not
+        // assumed from the older, now-superseded decisions.md row 27) —
+        // and it recurs on every hold-to-talk attempt, not occasionally,
+        // since modifier-before-trigger is the only press order that ever
+        // matches the accelerator at all. So unregister here, exactly as a
+        // gesture does, and let the renderer bootstrap its "held" state
+        // from this activation signal rather than from a local keydown —
+        // same principle as the overlay (decisions.md), for the same
+        // reason: a key already down when this context starts does not
+        // reliably fire a fresh keydown.
+        log('Hotkey pressed while the Chat Panel has focus — starting hold-to-talk.');
+        globalShortcut.unregisterAll();
+        holdToTalkActive = true;
+        seenHoldToTalkKey = false;
+        chatPanelWindow.webContents.send('hold-to-talk-start');
+        armHoldToTalkWatchdog();
+        return;
+      }
+
+      // Not focused (user is elsewhere) — don't start a second gesture
+      // (which would spawn a second, colliding panel) and don't start
+      // hold-to-talk (nothing asked for it). Reuses the same "focus the
+      // existing thing" response as the second-instance guard below,
+      // instead of inventing a new one.
+      log('Hotkey pressed while a Chat Panel session is open — focusing it instead of starting a new gesture.');
+      if (chatPanelWindow.isMinimized()) chatPanelWindow.restore();
+      chatPanelWindow.focus();
+      return;
+    }
 
     // Unregister immediately: while this accelerator stays registered,
     // macOS's global-hotkey layer claims the trigger key's own keyup
@@ -301,10 +627,17 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on('second-instance', () => {
-    // Nothing to raise today: the overlay is a transient gesture surface, not
-    // a window to show outside a gesture. At Step 5 the Chat Panel becomes the
-    // right thing to focus here.
-    log('A second instance tried to launch and was blocked by the single-instance lock.');
+    // The overlay is still a transient gesture surface, not something to
+    // raise here — but per the TODO this comment used to carry, the Chat
+    // Panel (Step 5) is: if a session is open, surface it instead of doing
+    // nothing.
+    if (chatPanelWindow) {
+      if (chatPanelWindow.isMinimized()) chatPanelWindow.restore();
+      chatPanelWindow.focus();
+      log('A second instance tried to launch — focused the existing Chat Panel instead.');
+    } else {
+      log('A second instance tried to launch and was blocked by the single-instance lock.');
+    }
   });
 
   app.whenReady().then(() => {
@@ -327,6 +660,83 @@ ipcMain.on('gesture-alive', () => {
   // so the short initial deadline gives way to the 5s silence watchdog.
   seenTriggerKey = true;
   armStuckGestureTimer();
+});
+
+// Auto-repeat keydown from the still-held hold-to-talk key. Same pattern as
+// gesture-alive above, kept as a separate handler/timer rather than shared
+// — see armHoldToTalkWatchdog()'s comment for why.
+ipcMain.on('hold-to-talk-alive', () => {
+  if (!holdToTalkWatchdog) return;
+  seenHoldToTalkKey = true;
+  armHoldToTalkWatchdog();
+});
+
+// The renderer's real Digit1 keyup — the only trusted signal that a
+// hold-to-talk press has ended, exactly parallel to how a gesture only ever
+// ends on the overlay's real keyup, never a timeout (decisions.md). The
+// watchdog above is a safety net for a stuck/lost-event case, not the
+// normal end path.
+//
+// audioPayload is null if the renderer never captured anything (mic
+// permission denied/unavailable, or getUserMedia failed) — see
+// chatPanel.html. Otherwise { samples: ArrayBuffer, sampleRate: number },
+// raw Float32 data straight from the renderer's audio graph: per
+// capture.js's established split, the renderer only hands back raw data,
+// every real decision (WAV construction, the duration guard, the actual
+// transcription call) happens here.
+//
+// Hotkey re-registration happens immediately, before any of the async
+// transcription work below — the key mechanics are done the instant the
+// real keyup arrives; there's no reason the accelerator should stay
+// unregistered for however long whisper takes to run.
+ipcMain.on('hold-to-talk-end', async (event, audioPayload) => {
+  clearHoldToTalkWatchdog();
+  holdToTalkActive = false;
+  log('Hold-to-talk ended by real keyup — re-registering hotkey.');
+  registerHotkey();
+
+  if (!audioPayload) {
+    log('[hold-to-talk] No audio captured (mic unavailable) — nothing to transcribe.');
+    return;
+  }
+
+  const samples = new Float32Array(audioPayload.samples);
+  const { sampleRate } = audioPayload;
+  const durationMs = (samples.length / sampleRate) * 1000;
+
+  if (durationMs < MIN_VOICE_DURATION_MS) {
+    log(`[hold-to-talk] Captured audio too short (${durationMs.toFixed(0)}ms < ${MIN_VOICE_DURATION_MS}ms) — skipping transcription.`);
+    if (chatPanelWindow) chatPanelWindow.webContents.send('hold-to-talk-too-short');
+    return;
+  }
+
+  let wavPath;
+  try {
+    fs.mkdirSync(VOICE_TMP_DIR, { recursive: true });
+    wavPath = path.join(VOICE_TMP_DIR, `voice-${Date.now()}.wav`);
+    fs.writeFileSync(wavPath, floatTo16BitWav(samples, sampleRate));
+
+    const rawTranscript = await nodewhisper(wavPath, {
+      modelName: 'base.en',
+      autoDownloadModelName: 'base.en',
+      removeWavFileAfterTranscription: false, // cleaned up ourselves below regardless of outcome
+      logger: { log: () => {}, debug: () => {}, error: (...args) => log('[whisper]', ...args) },
+    });
+    const text = extractTranscriptText(rawTranscript);
+    log('[hold-to-talk] Transcribed:', JSON.stringify(text));
+    if (chatPanelWindow) chatPanelWindow.webContents.send('hold-to-talk-transcript', text);
+  } catch (err) {
+    log('[hold-to-talk] Transcription failed:', err.message);
+    if (chatPanelWindow) chatPanelWindow.webContents.send('hold-to-talk-error', err.message);
+  } finally {
+    if (wavPath) {
+      try {
+        fs.unlinkSync(wavPath);
+      } catch (err) {
+        log('[hold-to-talk] Failed to clean up temp WAV:', wavPath, err.message);
+      }
+    }
+  }
 });
 
 ipcMain.on('selection-finalized', async (event, bbox) => {
@@ -354,8 +764,9 @@ ipcMain.on('selection-finalized', async (event, bbox) => {
   // The hotkey stays unregistered for the duration of this (re-registered
   // below, same as every other path through this handler), so there's never
   // a second gesture's capture request in flight at the same time.
+  let cropPath, fullPath;
   try {
-    const { cropPath, fullPath } = await Promise.race([
+    ({ cropPath, fullPath } = await Promise.race([
       captureRegion(bbox, activeDisplayId),
       new Promise((_resolve, reject) =>
         setTimeout(
@@ -363,7 +774,7 @@ ipcMain.on('selection-finalized', async (event, bbox) => {
           CAPTURE_OVERALL_TIMEOUT_MS
         )
       ),
-    ]);
+    ]));
     log('Captured region — crop:', cropPath, ' full:', fullPath);
   } catch (err) {
     log('captureRegion failed:', err.message || err);
@@ -379,8 +790,11 @@ ipcMain.on('selection-finalized', async (event, bbox) => {
     // completion case, and a subsequent gesture can never be in flight here
     // (the hotkey stays unregistered until this handler returns).
     ipcMain.removeAllListeners('capture-result');
+    registerHotkey();
+    return;
   }
 
+  createChatPanelWindow(cropPath, fullPath, activeDisplayId);
   registerHotkey();
 });
 

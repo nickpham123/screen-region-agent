@@ -90,7 +90,12 @@ function createCaptureRegion(overlayWindow) {
     const cropImage = fullImage.crop(cropRect);
 
     const stamp = Date.now();
-    const tempDir = app.getPath('temp');
+    // Dedicated subfolder, not the OS temp root directly — per decisions.md's
+    // temp-file-lifecycle design, this is what lets a future startup sweep
+    // (deferred, see todo.md) safely delete-by-age without ever touching
+    // unrelated files some other app left in the shared temp root.
+    const tempDir = path.join(app.getPath('temp'), 'screen-region-captures');
+    fs.mkdirSync(tempDir, { recursive: true });
     const fullPath = path.join(tempDir, `screen-region-full-${stamp}.png`);
     const cropPath = path.join(tempDir, `screen-region-crop-${stamp}.png`);
 
