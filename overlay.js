@@ -271,7 +271,7 @@ document.addEventListener('keyup', (e) => {
 // (the previous capture's) on the second getUserMedia() call in a renderer
 // session, which this app's long-lived overlay renderer will hit across
 // gestures. See decisions.md.
-window.overlayAPI.onCaptureRequest(async ({ sourceId }) => {
+window.overlayAPI.onCaptureRequest(async ({ sourceId, requestId }) => {
   let track;
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -301,9 +301,9 @@ window.overlayAPI.onCaptureRequest(async ({ sourceId }) => {
     canvas.height = height;
     canvas.getContext('2d').drawImage(video, 0, 0, width, height);
 
-    window.overlayAPI.captureResult({ dataUrl: canvas.toDataURL('image/png') });
+    window.overlayAPI.captureResult({ requestId, dataUrl: canvas.toDataURL('image/png') });
   } catch (err) {
-    window.overlayAPI.captureResult({ error: err.message || String(err) });
+    window.overlayAPI.captureResult({ requestId, error: err.message || String(err) });
   } finally {
     if (track) track.stop();
   }

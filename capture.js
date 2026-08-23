@@ -33,6 +33,11 @@ const path = require('path');
 
 const CAPTURE_TIMEOUT_MS = 5000;
 
+// Tags each capture-request/capture-result round trip so a late reply from
+// an abandoned request can never be mistaken for a different, later
+// request's own result — see requestFrameFromRenderer() below.
+let nextCaptureRequestId = 0;
+
 function createCaptureRegion(overlayWindow) {
   return async function captureRegion(bbox, displayId) {
     const accessStatus = systemPreferences.getMediaAccessStatus('screen');
@@ -97,10 +102,26 @@ function createCaptureRegion(overlayWindow) {
 }
 
 // Sends one capture request to the overlay's renderer and resolves with its
-// reply (or rejects on error/timeout). Sequential by construction — the
-// hotkey stays unregistered until this resolves (see main.js), so there's
-// never a second request in flight to collide with this listener.
+// reply (or rejects on error/timeout).
+//
+// Normally sequential — the hotkey stays unregistered until this resolves
+// (see main.js) — but main.js's CAPTURE_OVERALL_TIMEOUT_MS can abandon a
+// call while this renderer round-trip is still genuinely in flight (found
+// during Step 4 self-review, 2026-08-22). If a new gesture then starts and
+// calls this again before the abandoned request's late reply arrives, a
+// plain 'capture-result' listener has no way to tell the two apart — it
+// would silently resolve the new gesture's promise with the OLD gesture's
+// stale frame. requestId closes that regardless of timing: each request is
+// tagged, the renderer echoes it back, and a reply that doesn't match the id
+// this call is waiting for is ignored rather than consumed.
+//
+// This can't use ipcMain.once(): a .once() listener unregisters itself on
+// the FIRST event it receives whether or not the id matches, which would
+// silently orphan the real reply behind a stale one. Uses ipcMain.on()
+// instead, removed manually only once a matching id is actually seen.
 function requestFrameFromRenderer(overlayWindow, sourceId) {
+  const requestId = ++nextCaptureRequestId;
+
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       ipcMain.removeListener('capture-result', onResult);
@@ -108,7 +129,9 @@ function requestFrameFromRenderer(overlayWindow, sourceId) {
     }, CAPTURE_TIMEOUT_MS);
 
     function onResult(_event, result) {
+      if (result.requestId !== requestId) return; // stale reply for an earlier, abandoned request
       clearTimeout(timer);
+      ipcMain.removeListener('capture-result', onResult);
       if (result.error) {
         reject(new Error(result.error));
       } else {
@@ -116,8 +139,8 @@ function requestFrameFromRenderer(overlayWindow, sourceId) {
       }
     }
 
-    ipcMain.once('capture-result', onResult);
-    overlayWindow.webContents.send('capture-request', { sourceId });
+    ipcMain.on('capture-result', onResult);
+    overlayWindow.webContents.send('capture-request', { sourceId, requestId });
   });
 }
 

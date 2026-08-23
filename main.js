@@ -367,13 +367,17 @@ ipcMain.on('selection-finalized', async (event, bbox) => {
     log('Captured region — crop:', cropPath, ' full:', fullPath);
   } catch (err) {
     log('captureRegion failed:', err.message || err);
-    // Promise.race doesn't cancel the losing side. If this rejection came
-    // from the overall timeout above (not from inside captureRegion itself),
-    // the abandoned call may still be mid-flight and could still be holding
-    // capture.js's ipcMain.once('capture-result', ...) listener. Clear it so
-    // a late reply from this abandoned call can't be mistaken for the next
-    // gesture's own capture result. Harmless to call unconditionally — in
-    // the normal-completion case there's nothing left to remove.
+    // Secondary hygiene only, not load-bearing for correctness (see
+    // capture.js's requestId comment for why): if this rejection came from
+    // the overall timeout above rather than from inside captureRegion
+    // itself, the abandoned call may still be mid-flight and holding a
+    // 'capture-result' listener that's now waiting for a reply nobody needs.
+    // requestId already guarantees that reply — whenever it eventually
+    // arrives — can't be mistaken for a future gesture's own result; this
+    // just removes it eagerly instead of leaving it to self-remove later.
+    // Safe to call unconditionally — nothing to remove in the normal-
+    // completion case, and a subsequent gesture can never be in flight here
+    // (the hotkey stays unregistered until this handler returns).
     ipcMain.removeAllListeners('capture-result');
   }
 
