@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const { createCaptureRegion } = require('./capture');
 const { nodewhisper } = require('nodejs-whisper');
+const { handleUserTurn } = require('./responseHandler');
 
 // Timestamped logging — makes separate gestures distinguishable in the log,
 // which mattered a lot while debugging the hotkey release path.
@@ -233,25 +234,66 @@ function createChatPanelWindow(cropPath, fullPath, displayId) {
   app.focus({ steal: true });
   chatPanelWindow.focus();
 
-  // Turns accumulate here as the panel's real UI sends them (wired in the
-  // next slice, via 'chat-turn-added'). Tracked in this closure, not a
-  // module-level variable, so a session's state can never leak into
-  // another's. The sender check is currently unreachable — only one Chat
-  // Panel can exist at a time, since a Control+1 press while one is open is
-  // guarded to focus it instead of starting a second gesture (see
+  // Turns accumulate here as the panel's real UI sends them, via
+  // 'chat-turn-added'; each addition also triggers a real model call
+  // (Step 7, responseHandler.js's handleUserTurn()) below. Tracked in this
+  // closure, not a module-level variable, so a session's state can never
+  // leak into another's. The sender check is currently unreachable — only
+  // one Chat Panel can exist at a time, since a Control+1 press while one
+  // is open is guarded to focus it instead of starting a second gesture (see
   // registerHotkey()'s chatPanelWindow check) — but it's one line of cheap
   // insurance against exactly the crosstalk this codebase would get if that
   // guard were ever bypassed and two listeners on the same channel both
   // fired.
   const turns = [];
+  // Tracks the AbortController for whichever askAboutRegion() call is
+  // currently in flight, if any — null the rest of the time. Lets the
+  // 'closed' handler below cancel a pending request per §7's "user closes
+  // the panel mid-request" row, rather than letting it complete into a
+  // destroyed window.
+  let inFlightController = null;
   function onTurnAdded(event, turn) {
     if (event.sender.id !== chatPanelWindow.webContents.id) return;
+    // The renderer disables its input while a reply is pending, so this
+    // shouldn't be reachable in practice — cheap insurance against two
+    // overlapping calls corrupting turns' assumed ordering, same shape as
+    // the sender-id check above.
+    if (inFlightController) return;
     turns.push(turn);
+    const { controller, done } = handleUserTurn(chatPanelWindow, cropPath, turns);
+    inFlightController = controller;
+    // Clears the guard once this call actually finishes (not on window
+    // close — that's handled separately below) — otherwise every turn
+    // after the first would find inFlightController still set and never
+    // fire. done never rejects, so no .catch needed here.
+    done.then(() => { inFlightController = null; });
   }
   ipcMain.on('chat-turn-added', onTurnAdded);
 
+  // Renderer-initiated retry after a failed call (chatPanel.html's error
+  // bubble). turns already ends on the unanswered user turn from the
+  // failed attempt — retry is just calling handleUserTurn() again with the
+  // same array, no new turn to push. Guarded on the last turn actually
+  // being an unanswered user turn so a stale/duplicate retry click can't
+  // re-fire a call for a turn that already got a real reply.
+  function onRetry(event) {
+    if (event.sender.id !== chatPanelWindow.webContents.id) return;
+    if (inFlightController) return; // same overlap guard as onTurnAdded
+    const lastTurn = turns[turns.length - 1];
+    if (!lastTurn || lastTurn.role !== 'user') return;
+    const { controller, done } = handleUserTurn(chatPanelWindow, cropPath, turns);
+    inFlightController = controller;
+    done.then(() => { inFlightController = null; });
+  }
+  ipcMain.on('chat-retry', onRetry);
+
   chatPanelWindow.on('closed', () => {
     ipcMain.removeListener('chat-turn-added', onTurnAdded);
+    ipcMain.removeListener('chat-retry', onRetry);
+    if (inFlightController) {
+      inFlightController.abort();
+      inFlightController = null;
+    }
     if (holdToTalkActive) {
       // Window closed mid-hold — the accelerator is unregistered and no
       // more events for this now-gone window are coming, so there's no

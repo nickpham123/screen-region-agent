@@ -8,6 +8,20 @@ contextBridge.exposeInMainWorld('chatPanelAPI', {
   // directly (contextIsolation is on, same reason every other bridge here
   // is this small).
   submitTurn: (turn) => ipcRenderer.send('chat-turn-added', turn),
+  // Step 7 (responseHandler.js): main tells the renderer a call just
+  // started, so it can show a loading state immediately (§6) rather than
+  // going quiet until the reply arrives.
+  onLoadingStart: (callback) => ipcRenderer.on('chat-loading-start', () => callback()),
+  // The assistant's real reply, already appended to main's turns array —
+  // the renderer only needs to render it, not track it independently.
+  onAssistantReply: (callback) => ipcRenderer.on('chat-assistant-reply', (event, turn) => callback(turn)),
+  // A §7-mapped, user-safe error message (network/rate-limit/malformed/
+  // other) — never a raw error object, since the Response Handler already
+  // did that translation.
+  onChatError: (callback) => ipcRenderer.on('chat-error', (event, message) => callback(message)),
+  // Re-attempts the last (still-unanswered) user turn after an error, per
+  // §7's "retry button" — no new turn to send, main already has it.
+  retryLastTurn: () => ipcRenderer.send('chat-retry'),
   // Main tells the renderer a hold-to-talk press has started. The renderer
   // bootstraps its "held" state from this signal, never from a local
   // keydown — same principle as the overlay (decisions.md): a key already

@@ -69,6 +69,10 @@ For multi-step tasks, state a brief plan before starting:
 ```
 Strong success criteria allow independent looping. Weak criteria ("make it work") require constant clarification — avoid them.
 
+### 5. Secrets never pass through the session
+
+Never ask the user to paste an API key, password, or other secret into chat, or to type one into a shell command run in this session — even framed as "it won't appear in the output." Secrets are set directly by the user, in their own terminal or a file they control (e.g. a local `.env`), never relayed through either the chat interface or a Claude Code-run shell command. If a secret is needed (e.g. an env var for an API call), ask the user to set it themselves outside the session and confirm once it's in place, rather than supplying a command that would relay it through the conversation.
+
 ---
 
 ## Part 2: Project-specific context
