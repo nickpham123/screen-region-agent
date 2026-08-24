@@ -9,22 +9,27 @@ Full detail lives in `data_pipeline.md` at the project root — this is the quic
 
 ## The schema (every record, real or synthetic)
 
+One record per **conversation**, not per question — a session can have several turns, all logged together once (see `system_design_plan.md` §5):
+
 ```json
 {
   "id": "uuid",
   "image_crop": "path/to/crop.png",
   "image_context": "path/to/full.png or null",
   "app_hint": "vscode | browser | pdf | ... | null",
-  "question": "string",
-  "answer": "string",
+  "turns": [
+    { "role": "user", "content": "string" },
+    { "role": "assistant", "content": "string" }
+  ],
   "category": "code | chart | ui | text | math | translation",
   "feedback": "thumbs_up | thumbs_down | null",
   "source": "real_usage | synthetic",
-  "timestamp": "ISO datetime"
+  "started_at": "ISO datetime",
+  "ended_at": "ISO datetime"
 }
 ```
 
-Every logging call, real or synthetic, writes this exact shape. Don't invent per-purpose variants — downstream fine-tuning code depends on this being consistent.
+Every logging call, real or synthetic, writes this exact shape. Don't invent per-purpose variants — downstream fine-tuning code depends on this being consistent. Storage is a local JSONL file, one line per conversation (`localLogger.js`'s `logConversation()`) — see `.claude/memory/decisions.md` for why JSONL over SQLite.
 
 ## Workflow: cleaning real usage data
 

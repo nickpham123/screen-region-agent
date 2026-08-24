@@ -59,7 +59,7 @@ This traces data from the moment someone circles something on screen through to 
 ## Stage details
 
 ### 1–2. Capture & Log
-Every interaction — real or synthetic — lands in the same schema (from the system design doc):
+One record per **conversation**, not per question — a session can have several back-and-forth turns, all sharing the same image and logged together once the chat panel closes (from the system design doc, §5):
 
 ```json
 {
@@ -67,15 +67,18 @@ Every interaction — real or synthetic — lands in the same schema (from the s
   "image_crop": "path/to/crop.png",
   "image_context": "path/to/full.png",
   "app_hint": "vscode",
-  "question": "what does this error mean",
-  "answer": "...",
+  "turns": [
+    { "role": "user", "content": "what does this error mean" },
+    { "role": "assistant", "content": "..." }
+  ],
   "category": "code",
   "feedback": "thumbs_up",
   "source": "real_usage",
-  "timestamp": "2026-08-08T10:00:00Z"
+  "started_at": "2026-08-08T10:00:00Z",
+  "ended_at": "2026-08-08T10:00:12Z"
 }
 ```
-This is written locally (SQLite/JSONL) at capture time — no network round-trip needed beyond the Mistral call that produced the answer.
+This is written locally (JSONL, one line per conversation — see `.claude/memory/decisions.md` for why JSONL over SQLite) once the chat panel closes, after every turn's Mistral call has already happened — not at capture time, since the conversation isn't complete until the panel closes.
 
 ### 3–4. Label, Filter, Clean
 - 👍 examples: usable as-is for training
