@@ -4,6 +4,7 @@ const fs = require('fs');
 const { createCaptureRegion } = require('./capture');
 const { nodewhisper } = require('nodejs-whisper');
 const { handleUserTurn } = require('./responseHandler');
+const { logConversation } = require('./localLogger');
 
 // Timestamped logging — makes separate gestures distinguishable in the log,
 // which mattered a lot while debugging the hotkey release path.
@@ -246,6 +247,12 @@ function createChatPanelWindow(cropPath, fullPath, displayId) {
   // guard were ever bypassed and two listeners on the same channel both
   // fired.
   const turns = [];
+  // Session bounds for the logged record (system_design_plan.md §5's
+  // started_at/ended_at) — captured here rather than derived from the
+  // capture filenames' Date.now() stamp, since that marks capture time,
+  // not chat-session time, and the two are conceptually different bounds
+  // even though they land within moments of each other in practice.
+  const startedAt = new Date().toISOString();
   // Tracks the AbortController for whichever askAboutRegion() call is
   // currently in flight, if any — null the rest of the time. Lets the
   // 'closed' handler below cancel a pending request per §7's "user closes
@@ -304,14 +311,34 @@ function createChatPanelWindow(cropPath, fullPath, displayId) {
       registerHotkey();
     }
     chatPanelWindow = null;
-    endChatSession(cropPath, fullPath, turns);
+    endChatSession(cropPath, fullPath, turns, startedAt);
   });
 }
 
+// turns is strictly append-only (main.js/responseHandler.js only ever
+// push() onto it, never splice/remove), so a session that ends on an
+// unanswered question — the panel closed mid-request (§7's cancel-on-
+// close), an error the user never retried, or a retry that itself got
+// cancelled — can only ever have that dangling turn as the *last* entry,
+// never mid-array. That trailing {role: 'user'} turn has no real answer
+// and must not be logged as a broken conversation (system_design_plan.md
+// §7: "don't log a partial/broken conversation") — trimmed here, not at
+// push time, so the renderer can still show the unanswered question on
+// screen right up until the panel actually closes.
+function trimToCompleteExchanges(turns) {
+  if (turns.length > 0 && turns[turns.length - 1].role === 'user') {
+    return turns.slice(0, -1);
+  }
+  return turns;
+}
+
 // The core invariant from decisions.md's temp-file-lifecycle row: exactly
-// one of {move to permanent storage} or {delete}, never neither, never
-// both. turns.length === 0 means no real conversation happened this
-// session (a capture opened but the panel closed with nothing submitted).
+// one of {move to permanent storage + log} or {delete, don't log}, never
+// neither, never both. Gated on whether at least one *complete* exchange
+// exists (loggableTurns.length > 0), not raw turns.length — a session
+// that never got past a single unanswered question (e.g. cancelled
+// immediately) has nothing worth keeping, same as a session with zero
+// turns at all.
 //
 // Does NOT touch hotkey registration. The accelerator is never unregistered
 // for the session's duration in the first place (see registerHotkey()'s
@@ -322,9 +349,10 @@ function createChatPanelWindow(cropPath, fullPath, displayId) {
 // no-op — no callback ever fired, so there was no hook left to give
 // feedback from — and (b) stranded the hotkey indefinitely with no
 // watchdog if this function ever failed to run. See decisions.md.
-function endChatSession(cropPath, fullPath, turns) {
-  if (turns.length === 0) {
-    log('Chat Panel closed with no turns — discarding temp captures.');
+function endChatSession(cropPath, fullPath, turns, startedAt) {
+  const loggableTurns = trimToCompleteExchanges(turns);
+  if (loggableTurns.length === 0) {
+    log('Chat Panel closed with no complete exchange — discarding temp captures.');
     for (const p of [cropPath, fullPath]) {
       try {
         fs.unlinkSync(p);
@@ -339,18 +367,19 @@ function endChatSession(cropPath, fullPath, turns) {
       const permFullPath = path.join(CAPTURES_DIR, path.basename(fullPath));
       moveFile(cropPath, permCropPath);
       moveFile(fullPath, permFullPath);
+      logConversation({
+        cropPath: permCropPath,
+        contextPath: permFullPath,
+        turns: loggableTurns,
+        startedAt,
+        endedAt: new Date().toISOString(),
+      });
       log(
-        `Chat Panel closed with ${turns.length} turn(s) — moved to permanent storage:`,
+        `Chat Panel closed with ${loggableTurns.length} turn(s) — moved to permanent storage and logged:`,
         permCropPath, permFullPath
       );
-      // TODO(Step 8): call the real Local Logger's logConversation() here,
-      // using permCropPath/permFullPath — never the original temp paths —
-      // once it exists. This branch is reachable now (text/voice input both
-      // call submitTurn() — see chatPanel.html) and has fired for real in
-      // testing; the TODO is only that the actual DB/JSONL write is Step 8's
-      // job, not that this code path is unused.
     } catch (err) {
-      log('Failed to move captures to permanent storage:', err.message);
+      log('Failed to move captures to permanent storage / log conversation:', err.message);
     }
   }
 }
