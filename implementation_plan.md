@@ -54,14 +54,20 @@ Goal: hold hotkey → drag box → release → popup shows an answer.
 
 ---
 
-## Phase 2 — Instrumentation (build alongside Phase 1)
+## Phase 2 — Instrumentation + Main App Window
 
-| Component | Tool/Library | Why |
+Storage and schema (id/image_crop/image_context/app_hint/turns/category/feedback/source, per system_design_plan.md §5) are **already built** — Local Logger shipped as Phase 1 Step 8, not Phase 2 work. What's left is genuinely new: the original instrumentation scope (feedback capture, app_hint auto-tagging) plus a persistent Main App Window that emerged from this session's design pass — two distinct UI surfaces (ephemeral Overlay/Chat Panel vs. this new persistent window) sharing backend modules, hence Step 2.0's reorg landing first.
+
+| Step | What | Why |
 |---|---|---|
-| Local storage | **SQLite** or flat **JSONL** files | No backend needed yet; simple append-only log |
-| Schema | id, image_crop, image_context, app_hint, question, answer, category, source | Keeps Phase 1 logs directly reusable as fine-tuning data later |
-| Feedback capture | Simple 👍/👎 buttons in the popup widget | Cheap quality signal without a rating system |
-| Active app detection (optional) | **`pywin32`** (Windows) / **`pygetwindow`** or **Quartz** (macOS) | Auto-tag `app_hint` for free |
+| 2.0 | Codebase reorg: `main.js` slimmed to orchestration; `src/overlay/`, `src/chatPanel/`, `src/shared/` introduced | Prerequisite for everything below — a Main Window's lifecycle code has nowhere sane to live in the pre-reorg flat layout without `main.js` growing further past its already-880-line size |
+| 2.1 | Feedback capture: 👍/👎 buttons in the Chat Panel title bar, persistent, settable once per conversation | Original Phase 2 scope. No schema change — `feedback` already exists in the per-conversation record |
+| 2.2 | Main App Window shell: one persistent `BrowserWindow` (`mainWindow.html`), sidebar-driven client-side view switching between Captures/Settings/Help, opened via dock icon/menu (not the hotkey) | New UX/product scope from this session — see decisions.md for why this is judged justified now, not speculative |
+| 2.3 | Settings page: Hotkey (real hold-drag-release gesture test before saving), Display name (local only, not auth), Theme (`nativeTheme` + `prefers-color-scheme`), Dictation language (multilingual model swap, own verification pass), App language (shown disabled — "coming soon"), Data and privacy (storage location + open-folder + clear-all) | New UX/product scope — see decisions.md and system_design_plan.md §3.8 |
+| 2.4 | Captures page: reverse-chronological list read from `conversations.jsonl` — thumbnail, first question, timestamp, feedback icon if set | New UX/product scope — makes the already-existing conversation log actually browsable |
+| 2.5 | Help page: static in-app usage guide (hotkey, basic flow) | New UX/product scope — no external marketing/support site exists yet to link out to |
+| 2.6 | Chat Panel enhancements: captured-region thumbnail (data URL passed at panel creation, click → IPC → `shell.openPath`), hold-to-talk mic level indicator (real-time RMS computed inline in the existing `ScriptProcessorNode` callback) | New UX scope, scoped to the Chat Panel rather than the Main Window |
+| 2.7 | Active app detection (optional): auto-tag `app_hint` via **Quartz** (macOS) | Original Phase 2 scope, still optional |
 
 ---
 

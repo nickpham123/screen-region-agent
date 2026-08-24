@@ -88,6 +88,9 @@ Everything today lives in one process on the user's machine except the single ou
   ```
 - **Conversation scope — ephemeral, session-only**: turns within one open panel share context (the model sees the full history so far, so follow-ups like "give me an example" work). Once the panel closes, that conversation is over — nothing is resumed or persisted for later browsing. The full turn history is logged once, at close, for the fine-tuning dataset (see §5) — but that's a one-way write, not a resumable chat log.
 - **Note on voice**: audio never leaves the device — consistent with "nothing leaves the device without the active query." Transcription is record-then-transcribe-on-release, not live word-by-word streaming (whisper.cpp doesn't naturally support that without real added complexity — not worth it for v1).
+- **Feedback buttons** (Phase 2.1): 👍/👎 in the title bar, persistent for the whole session, settable once per conversation. No schema change — `feedback` already exists on the per-conversation record (§5).
+- **Captured-region thumbnail** (Phase 2.6): a small thumbnail of the circled region, shown in the panel from the moment it opens. Passed once at panel creation as a data URL from the already-in-memory capture — no extra file read or IPC round-trip needed. Clicking it opens the full crop image in the system's default viewer via `shell.openPath` over IPC.
+- **Hold-to-talk mic level indicator** (Phase 2.6): a real-time level meter driven by RMS computed inline in the existing `ScriptProcessorNode` callback that already has the raw PCM buffer in hand — not a decorative loop animation independent of actual mic input.
 
 ### 3.5 Vision Model Client
 - **Responsibility**: package image(s) + the running conversation into a model call, return the next answer
@@ -108,6 +111,23 @@ Everything today lives in one process on the user's machine except the single ou
 - **Responsibility**: on session close, write the complete conversation (all turns) to local storage in the fine-tuning-ready schema
 - **Tech**: SQLite (e.g. `better-sqlite3`) or flat JSONL file
 - **Interface**: `logConversation(cropPath, contextPath, appHint, turns, feedback)`
+
+### 3.8 Main App Window (Phase 2)
+- **Responsibility**: a persistent home for everything that isn't the ephemeral hotkey→overlay→chat flow — browsing past captures, changing settings, and a static help guide. Distinct lifecycle from the Overlay/Chat Panel: opened via the dock icon or app menu, not the hotkey, and — unlike the Chat Panel's fresh-window-per-session design (§3.4, decisions.md) — this window is meant to persist and be reopened/reused across the app's runtime, not recreated per interaction.
+- **Tech**: a single persistent `BrowserWindow` (`mainWindow.html`). Captures/Settings/Help are views inside that one window, switched client-side via a sidebar — not three separate `BrowserWindow`s. Chosen to avoid tripling the window-lifecycle bookkeeping (focus, secondary-display Space handling, close semantics) already spent real debugging effort on for the Overlay and Chat Panel (see decisions.md).
+- **Open question, not yet decided**: what closing this window does — quit the app, or hide it while the app (and hotkey) keeps running in the background, the way a menu-bar/dock-icon utility usually behaves. Nothing genuinely persistent existed before this, so the question is new; flagged in decisions.md, not resolved here.
+
+**Settings page**:
+- Hotkey — changing it requires a real hold-drag-release gesture test before saving, not a static validity check. Reuses this project's own "registration success proves nothing" lesson (decisions.md): a candidate accelerator can register cleanly via `globalShortcut.register()` and still fail for reasons no static check catches. Failure/timeout behavior during that test is explicitly not yet decided.
+- Display name — local-only field, explicitly **not** authentication. Real user auth stays exactly as already scoped at Phase 7 (Supabase Auth), unaffected by this.
+- Theme — Electron's `nativeTheme` API + CSS `prefers-color-scheme`, light/dark/system. Both already built into Electron/Chromium, no new dependency.
+- Dictation language — swaps the whisper.cpp model off `base.en` to a multilingual model. Reopens the already-flagged model-size tradeoff (todo.md) rather than being independent of it; needs its own accuracy verification pass per language actually offered, not assumed to work from architecture alone.
+- App language / full i18n — shown disabled ("coming soon") rather than omitted or silently built. Deferred because translation debt scales with a UI surface that's still actively changing.
+- Data and privacy — capture storage location + an open-folder action + a clear-all action. Justified by the pre-existing privacy-first constraint (§1: "no silent capture, no unnecessary retention"), not new scope — this makes that commitment visible and actionable.
+
+**Captures page**: reads `conversations.jsonl` (§5), reverse-chronological list — thumbnail, first question, timestamp, and a feedback icon if `feedback` is set on that record.
+
+**Help page**: a static in-app usage guide (hotkey, basic flow). No external link — no marketing/support site exists yet (see decisions.md).
 
 ---
 
