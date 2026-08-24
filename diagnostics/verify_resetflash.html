@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  /* Copied verbatim from overlay.html's #resetFlash rules. */
+  #resetFlash {
+    position: fixed;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.9);
+    opacity: 0;
+  }
+  #resetFlash.flash {
+    animation: reset-flash 0.35s ease-out;
+  }
+  @keyframes reset-flash {
+    0% { opacity: 0.9; transform: scale(0.5); }
+    100% { opacity: 0; transform: scale(2.5); }
+  }
+</style>
+</head>
+<body>
+<div id="resetFlash"></div>
+<script>
+  const el = document.getElementById('resetFlash');
+
+  function sample(label) {
+    console.log(`${label}: computed opacity = ${getComputedStyle(el).opacity}`);
+  }
+
+  // Same trick overlay.js's showResetFlash() uses to restart the animation.
+  function triggerFlash() {
+    el.classList.remove('flash');
+    void el.offsetWidth;
+    el.classList.add('flash');
+  }
+
+  // Gesture 1: click-to-reset flash starts, then key-release fires
+  // mid-animation — overlay.js's keyup handler does classList.remove('flash')
+  // + style.opacity = '0'.
+  triggerFlash();
+  setTimeout(() => {
+    sample('100ms in (mid-animation), before keyup cleanup');
+    el.classList.remove('flash');
+    el.style.opacity = '0';
+    sample('immediately after keyup cleanup (class removed, inline opacity=0)');
+  }, 100); // genuinely mid-flight in the 350ms animation
+
+  // Gesture 2: next click-to-reset, well after gesture 1's animation would
+  // have finished on its own (350ms) — same call as showResetFlash().
+  setTimeout(() => {
+    triggerFlash();
+    setTimeout(() => sample('0ms after re-triggering for gesture 2'), 0);
+    setTimeout(() => sample('16ms after re-triggering for gesture 2'), 16);
+    setTimeout(() => sample('30ms after re-triggering for gesture 2'), 30);
+  }, 500);
+</script>
+</body>
+</html>

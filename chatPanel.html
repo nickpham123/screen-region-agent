@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Chat Panel</title>
+  <style>
+    body {
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #1e1e1e;
+      color: #e8e8e8;
+    }
+    #history {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .turn {
+      padding: 8px 12px;
+      border-radius: 10px;
+      max-width: 85%;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 14px;
+      line-height: 1.4;
+    }
+    .turn.user {
+      align-self: flex-end;
+      background: #2f6fed;
+      color: white;
+    }
+    .turn.assistant {
+      align-self: flex-start;
+      background: #333;
+    }
+    /* A failed call, per §7's failure-mode table — rendered inline in
+       history (not pushed into the turns array sent to Mistral/logged,
+       see responseHandler.js) so the conversation visibly "stays open to
+       retry" rather than looking like nothing happened. */
+    .turn.error {
+      align-self: flex-start;
+      background: #4a2626;
+      color: #ffb4b4;
+    }
+    .turn.error .retry-link {
+      display: inline-block;
+      margin-top: 6px;
+      color: #ff8a8a;
+      text-decoration: underline;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    #recording, #loading {
+      display: none;
+      padding: 4px 12px;
+      font-size: 12px;
+    }
+    #recording {
+      color: #ff6b6b;
+    }
+    #loading {
+      color: #8a8aff;
+    }
+    #recording.active, #loading.active {
+      display: block;
+    }
+    #input {
+      border: none;
+      border-top: 1px solid #333;
+      padding: 12px;
+      font-size: 14px;
+      font-family: inherit;
+      background: #2a2a2a;
+      color: #e8e8e8;
+      outline: none;
+      resize: none;
+      overflow-y: auto;
+      max-height: 140px;
+      line-height: 1.4;
+    }
+  </style>
+</head>
+<body>
+  <div id="history"></div>
+  <div id="recording">🎤 Recording — release the key to stop</div>
+  <div id="loading">🤔 Thinking…</div>
+  <textarea id="input" autofocus rows="1" placeholder="Ask about the selected region…"></textarea>
+
+  <!--
+    Text history is fully wired: Enter submits a user turn, rendered here
+    and sent to main.js's existing `chat-turn-added` listener, which now
+    (Step 7, responseHandler.js) triggers a real model call. A loading
+    state shows immediately (§6); the reply renders as an assistant turn,
+    or a §7-mapped error renders inline with a retry link.
+
+    Hold-to-talk (system_design_plan.md §3.4, decisions.md's 2026-08-23
+    resolutions) is fully wired: raw PCM capture here, WAV construction +
+    nodejs-whisper transcription in main.js (renderer only hands back raw
+    data — same split capture.js already established for screenshots).
+    Voice transcription populates #input the same way typing does, never
+    auto-submits — one submission path (Enter) regardless of input method.
+  -->
+  <script>
+    const historyEl = document.getElementById('history');
+    const inputEl = document.getElementById('input');
+    const recordingEl = document.getElementById('recording');
+    const loadingEl = document.getElementById('loading');
+    const RECORDING_DEFAULT_TEXT = recordingEl.textContent;
+    inputEl.focus();
+
+    // True while a model call is in flight — gates submission (one call at
+    // a time; the input is also disabled below as the visible half of the
+    // same guard) rather than letting overlapping calls corrupt the turns
+    // array's assumed user/assistant ordering.
+    let awaitingReply = false;
+
+    function setAwaitingReply(value) {
+      awaitingReply = value;
+      loadingEl.classList.toggle('active', value);
+      inputEl.disabled = value;
+      if (!value) inputEl.focus();
+    }
+
+    function renderTurn(turn) {
+      const el = document.createElement('div');
+      el.className = `turn ${turn.role}`;
+      el.textContent = turn.content;
+      historyEl.appendChild(el);
+      historyEl.scrollTop = historyEl.scrollHeight;
+    }
+
+    // A failed call (§7's failure-mode table) — rendered inline, not
+    // pushed into any turns array (responseHandler.js never adds one on
+    // failure), so it can never leak into what's sent to Mistral or
+    // eventually logged. The retry link re-sends the same still-unanswered
+    // user turn main already has; disabled after one click so a fast
+    // double-click can't fire two overlapping retries.
+    function renderError(message) {
+      const el = document.createElement('div');
+      el.className = 'turn error';
+      el.textContent = message + ' ';
+      const retry = document.createElement('span');
+      retry.className = 'retry-link';
+      retry.textContent = 'Retry';
+      retry.addEventListener('click', () => {
+        if (awaitingReply) return;
+        retry.textContent = 'Retrying…';
+        retry.style.pointerEvents = 'none';
+        window.chatPanelAPI.retryLastTurn();
+      });
+      el.appendChild(retry);
+      historyEl.appendChild(el);
+      historyEl.scrollTop = historyEl.scrollHeight;
+    }
+
+    window.chatPanelAPI.onLoadingStart(() => setAwaitingReply(true));
+
+    window.chatPanelAPI.onAssistantReply((turn) => {
+      setAwaitingReply(false);
+      renderTurn(turn);
+    });
+
+    window.chatPanelAPI.onChatError((message) => {
+      setAwaitingReply(false);
+      renderError(message);
+    });
+
+    // Grows the box to fit its content (up to the CSS max-height, beyond
+    // which it scrolls internally) — a plain single-line input was hiding
+    // everything but the tail end of an accumulated multi-segment message
+    // (confirmed by real testing: appending was already working correctly,
+    // the box just wasn't showing it). Reset height to 'auto' first so
+    // shrinking (e.g. after Enter clears the box) is measured correctly too
+    // — scrollHeight only ever grows if the previous height isn't released.
+    function autoResizeInput() {
+      inputEl.style.height = 'auto';
+      inputEl.style.height = inputEl.scrollHeight + 'px';
+    }
+
+    inputEl.addEventListener('input', autoResizeInput);
+
+    inputEl.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' || e.shiftKey) return; // Shift+Enter inserts a real newline
+      e.preventDefault(); // a plain textarea would otherwise insert one here too
+      if (awaitingReply) return; // one call at a time — see setAwaitingReply()
+      const text = inputEl.value.trim();
+      if (!text) return;
+      const turn = { role: 'user', content: text };
+      renderTurn(turn);
+      window.chatPanelAPI.submitTurn(turn);
+      inputEl.value = '';
+      autoResizeInput();
+    });
+
+    // Briefly shows a message in the recording indicator, then reverts to
+    // its default text — same "brief, self-clearing cue" shape as the
+    // overlay's reset-flash, so a guard/error never reads as a silent
+    // nothing-happened (decisions.md: this project treats that as the
+    // worst failure category, not a cosmetic one).
+    function flashRecordingStatus(message, ms = 2000) {
+      recordingEl.textContent = message;
+      recordingEl.classList.add('active');
+      setTimeout(() => {
+        recordingEl.classList.remove('active');
+        recordingEl.textContent = RECORDING_DEFAULT_TEXT;
+      }, ms);
+    }
+
+    let holding = false;
+
+    // Audio-graph state for the current hold, torn down by stopRecording()
+    // regardless of how the hold ends (real keyup or watchdog cancel).
+    let audioContext = null;
+    let micStream = null;
+    let processorNode = null;
+    let silentGain = null;
+    let capturedChunks = [];
+    let actualSampleRate = null;
+
+    // Tears down the audio graph and returns whatever was captured, or null
+    // if nothing was (mic never became available, or zero chunks arrived).
+    // Safe to call even if recording never started.
+    function stopRecording() {
+      if (processorNode) {
+        processorNode.disconnect();
+        processorNode.onaudioprocess = null;
+        processorNode = null;
+      }
+      if (silentGain) {
+        silentGain.disconnect();
+        silentGain = null;
+      }
+      if (micStream) {
+        micStream.getTracks().forEach((t) => t.stop());
+        micStream = null;
+      }
+      if (audioContext) {
+        audioContext.close();
+        audioContext = null;
+      }
+      if (capturedChunks.length === 0) return null;
+      const totalLength = capturedChunks.reduce((sum, c) => sum + c.length, 0);
+      const merged = new Float32Array(totalLength);
+      let offset = 0;
+      for (const chunk of capturedChunks) {
+        merged.set(chunk, offset);
+        offset += chunk.length;
+      }
+      capturedChunks = [];
+      return { samples: merged, sampleRate: actualSampleRate };
+    }
+
+    window.chatPanelAPI.onHoldToTalkStart(async () => {
+      holding = true;
+      recordingEl.textContent = RECORDING_DEFAULT_TEXT;
+      recordingEl.classList.add('active');
+      window.chatPanelAPI.debugLog('[hold-to-talk] started (bootstrapped from activation signal)');
+      capturedChunks = [];
+
+      try {
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        // Requesting 16000 directly avoids needing to resample ourselves —
+        // whisper's native rate, and nodejs-whisper's own WAV validator
+        // requires it. NOT assumed to be honored — logged so a real hold
+        // can confirm the actual rate obtained (see decisions.md).
+        audioContext = new AudioContext({ sampleRate: 16000 });
+        actualSampleRate = audioContext.sampleRate;
+        window.chatPanelAPI.debugLog(`[hold-to-talk] AudioContext sampleRate=${actualSampleRate} (requested 16000)`);
+
+        const source = audioContext.createMediaStreamSource(micStream);
+        // ScriptProcessorNode is deprecated in favor of AudioWorkletNode,
+        // but AudioWorklet needs a separate module file loaded via
+        // audioContext.audioWorklet.addModule() — real added complexity
+        // (a second file, a load step) for a Phase 1 prototype. Chosen
+        // deliberately, not by default.
+        processorNode = audioContext.createScriptProcessor(4096, 1, 1);
+        processorNode.onaudioprocess = (e) => {
+          if (!holding) return;
+          capturedChunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+        };
+        // A ScriptProcessorNode's onaudioprocess only fires while connected
+        // to a live path reaching the destination — a known engine quirk,
+        // not a design choice. Routing through a zero-gain node keeps the
+        // graph "active" without actually playing the mic back over the
+        // speakers (which would otherwise cause audible feedback/echo).
+        silentGain = audioContext.createGain();
+        silentGain.gain.value = 0;
+        source.connect(processorNode);
+        processorNode.connect(silentGain);
+        silentGain.connect(audioContext.destination);
+      } catch (err) {
+        window.chatPanelAPI.debugLog('[hold-to-talk] mic unavailable: ' + err.message);
+        flashRecordingStatus('🎤 Microphone unavailable');
+        // Deliberately not touching `holding` or returning early in a way
+        // that would skip the keydown/keyup listeners below — the hold-to-
+        // talk key mechanics stay correct regardless of whether audio
+        // capture itself succeeded. holdToTalkEnd(null) on release is what
+        // tells main there's nothing to transcribe.
+      }
+    });
+
+    window.chatPanelAPI.onHoldToTalkCancel(() => {
+      if (!holding) return;
+      holding = false;
+      recordingEl.classList.remove('active');
+      window.chatPanelAPI.debugLog('[hold-to-talk] cancelled by the liveness watchdog (stuck/lost keyup)');
+      stopRecording(); // release mic/audio resources; result discarded
+    });
+
+    window.chatPanelAPI.onHoldToTalkTranscript((text) => {
+      window.chatPanelAPI.debugLog('[hold-to-talk] transcript: ' + JSON.stringify(text));
+      if (text) {
+        // Appends rather than replaces — multiple hold-to-talk segments (or
+        // dictating a follow-up onto something already typed) accumulate
+        // instead of each one wiping out what came before. Confirmed
+        // necessary by real testing: three separate real transcriptions in
+        // one session would have silently lost the first two under a
+        // plain replace.
+        const existing = inputEl.value.trim();
+        inputEl.value = existing ? `${existing} ${text}` : text;
+        // Explicit, not relied on as default behavior: puts the cursor at
+        // the end so continued typing or another dictation lands after
+        // what was just inserted, not wherever the browser happens to
+        // leave it after a programmatic .value set.
+        inputEl.selectionStart = inputEl.selectionEnd = inputEl.value.length;
+        autoResizeInput();
+      }
+      inputEl.focus();
+    });
+
+    window.chatPanelAPI.onHoldToTalkTooShort(() => {
+      flashRecordingStatus('🎤 Too short — try again');
+    });
+
+    window.chatPanelAPI.onHoldToTalkError((message) => {
+      window.chatPanelAPI.debugLog('[hold-to-talk] transcription error: ' + message);
+      flashRecordingStatus('🎤 Transcription failed');
+    });
+
+    window.addEventListener('keydown', (e) => {
+      if (e.code !== 'Digit1' || !holding) return;
+      // Every keydown re-arms the main-process watchdog, same as the
+      // overlay's gestureAlive — not gated on e.repeat, since the first one
+      // this listener ever sees for a given hold is already a repeat (the
+      // accelerator claims the real first keydown — see decisions.md).
+      window.chatPanelAPI.holdToTalkAlive();
+    });
+
+    window.addEventListener('keyup', (e) => {
+      if (e.code !== 'Digit1' || !holding) return;
+      holding = false;
+      recordingEl.classList.remove('active');
+      window.chatPanelAPI.debugLog('[hold-to-talk] ended by real keyup');
+      const audio = stopRecording();
+      window.chatPanelAPI.holdToTalkEnd(
+        audio ? { samples: audio.samples.buffer, sampleRate: audio.sampleRate } : null
+      );
+    });
+  </script>
+</body>
+</html>
