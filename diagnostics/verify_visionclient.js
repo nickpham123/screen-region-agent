@@ -11,7 +11,7 @@
 // Run: node diagnostics/verify_visionclient.js <path-to-a-real-crop.png>
 
 const fs = require('fs');
-const { askAboutRegion } = require('../visionClient');
+const { askAboutRegion } = require('../src/shared/visionClient');
 
 function assert(cond, msg) {
   if (!cond) throw new Error('FAIL: ' + msg);

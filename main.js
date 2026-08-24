@@ -1,10 +1,10 @@
 const { app, BrowserWindow, globalShortcut, ipcMain, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { createCaptureRegion } = require('./capture');
+const { createCaptureRegion } = require('./src/shared/capture');
 const { nodewhisper } = require('nodejs-whisper');
-const { handleUserTurn } = require('./responseHandler');
-const { logConversation } = require('./localLogger');
+const { handleUserTurn } = require('./src/shared/responseHandler');
+const { logConversation } = require('./src/shared/localLogger');
 
 // Timestamped logging — makes separate gestures distinguishable in the log,
 // which mattered a lot while debugging the hotkey release path.
@@ -12,10 +12,6 @@ function log(...args) {
   console.log(new Date().toISOString(), ...args);
 }
 
-// TEMPORARY: placeholder window from Step 1. No longer wired to the hotkey
-// (the real Selection Overlay below now owns that job) — likely becomes the
-// basis for the Chat Panel at Step 5.
-let win;
 let overlayWindow;
 let captureRegion;
 // The Chat Panel is created fresh per session and closed (not hidden) when
@@ -39,19 +35,6 @@ let holdToTalkActive = false;
 // moved off that display mid-drag — see decisions.md.
 let activeDisplayId = null;
 
-function createWindow() {
-  win = new BrowserWindow({
-    width: 800,
-    height: 600,
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  });
-
-  win.loadFile('index.html');
-}
-
 // Initial bounds only — the overlay is repositioned to the cursor's display
 // on every activation (see registerHotkey). The primary display is just a
 // sensible starting position for a window that is never shown until then.
@@ -74,7 +57,7 @@ function createOverlayWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(__dirname, 'src/overlay/preload.js'),
     },
   });
 
@@ -82,13 +65,13 @@ function createOverlayWindow() {
   // separate Spaces"). Without this, an overlay moved to the secondary
   // display renders and receives mouse events but never becomes the *key*
   // window: `app.focus({steal:true})` activates the app and macOS gives key
-  // status to a window on the currently active Space — which is the other
-  // display's, where the Step 1 placeholder window still lives. Symptom was
-  // a trail that drew normally and then died at the 2.5s no-key-event
-  // deadline while the user was still holding.
+  // status to a window on whichever display's Space was active before
+  // activation, not necessarily the overlay's own. Symptom was a trail that
+  // drew normally and then died at the 2.5s no-key-event deadline while the
+  // user was still holding.
   overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
-  overlayWindow.loadFile('overlay.html');
+  overlayWindow.loadFile(path.join(__dirname, 'src/overlay/overlay.html'));
 }
 
 // Where a session's crop/full images live once a real conversation happened
@@ -214,7 +197,7 @@ function createChatPanelWindow(cropPath, fullPath, displayId) {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      preload: path.join(__dirname, 'chatPanelPreload.js'),
+      preload: path.join(__dirname, 'src/chatPanel/chatPanelPreload.js'),
     },
   });
 
@@ -226,7 +209,7 @@ function createChatPanelWindow(cropPath, fullPath, displayId) {
   // session, unlike the overlay where it only had to run once total.
   chatPanelWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
-  chatPanelWindow.loadFile('chatPanel.html');
+  chatPanelWindow.loadFile(path.join(__dirname, 'src/chatPanel/chatPanel.html'));
 
   chatPanelWindow.show();
   // Same reasoning as the overlay's activation: .focus() alone doesn't
@@ -712,7 +695,6 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(() => {
-    createWindow();
     createOverlayWindow();
     captureRegion = createCaptureRegion(overlayWindow);
     registerHotkey();
