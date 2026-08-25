@@ -43,14 +43,17 @@
     }
     #feedbackNoteWrap {
       display: none;
+      align-items: center;
+      gap: 6px;
       padding: 0 10px 8px;
       border-bottom: 1px solid #333;
     }
     #feedbackNoteWrap.visible {
-      display: block;
+      display: flex;
     }
     #feedbackNote {
-      width: 100%;
+      flex: 1;
+      min-width: 0;
       box-sizing: border-box;
       background: #2a2a2a;
       color: #e8e8e8;
@@ -60,6 +63,22 @@
       font-size: 12px;
       font-family: inherit;
       outline: none;
+    }
+    /* Explicit submit affordance: Enter confirms the note (a dedicated
+       send button was tried and dropped — Enter alone already gives the
+       real behavior this needed: visible confirmation + an unconfirmed
+       note discarded on close, see decisions.md). This is just the brief
+       "✓ Noted" flash, same transient-cue convention as #recording's
+       flashRecordingStatus() below. */
+    #feedbackNoteConfirm {
+      flex-shrink: 0;
+      font-size: 11px;
+      color: #6fcf8f;
+      opacity: 0;
+      transition: opacity 0.2s ease;
+    }
+    #feedbackNoteConfirm.visible {
+      opacity: 1;
     }
     #history {
       flex: 1;
@@ -140,7 +159,8 @@
     <button id="feedbackDown" title="Bad response">👎</button>
   </div>
   <div id="feedbackNoteWrap">
-    <input id="feedbackNote" type="text" placeholder="What was wrong? (optional)" />
+    <input id="feedbackNote" type="text" placeholder="What was wrong? (optional, press Enter)" />
+    <span id="feedbackNoteConfirm">✓ Noted</span>
   </div>
   <div id="history"></div>
   <div id="recording">🎤 Recording — release the key to stop</div>
@@ -168,24 +188,33 @@
     const feedbackDownEl = document.getElementById('feedbackDown');
     const feedbackNoteWrapEl = document.getElementById('feedbackNoteWrap');
     const feedbackNoteEl = document.getElementById('feedbackNote');
+    const feedbackNoteConfirmEl = document.getElementById('feedbackNoteConfirm');
     const recordingEl = document.getElementById('recording');
     const loadingEl = document.getElementById('loading');
     const RECORDING_DEFAULT_TEXT = recordingEl.textContent;
     inputEl.focus();
 
     // Phase 2.1: feedback state, one value for the whole conversation (not
-    // per-turn) — 'thumbs_up' | 'thumbs_down' | null. Each change is sent
-    // to main immediately (main is the source of truth at close time, same
-    // shape as `turns` — see main.js/decisions.md), not batched for submit.
+    // per-turn) — 'thumbs_up' | 'thumbs_down' | null, sent to main
+    // immediately on change (main is the source of truth at close time,
+    // same shape as `turns` — see main.js/decisions.md).
+    //
+    // confirmedNote is deliberately separate from the field's live value:
+    // it only ever updates via an explicit submit (Enter, see submitNote()
+    // below) — typing alone never sets it. This is a real behavior change
+    // from the first Phase 2.1 pass (which streamed the note on every
+    // keystroke): an unsubmitted note is now discarded on close, not
+    // silently captured — that's the actual meaning of an explicit submit
+    // affordance, not just decoration. A dedicated send button was tried
+    // and dropped (2026-08-25, see decisions.md) — it added a
+    // disabled/hover state for behavior Enter alone already provides.
     let feedbackState = null;
+    let confirmedNote = null;
 
     function sendFeedback() {
       window.chatPanelAPI.setFeedback({
         feedback: feedbackState,
-        // Only 👎 ever shows/uses the note field — a 👍 (or no feedback
-        // yet) always sends null, regardless of what might be left typed
-        // in a hidden field, so a note can never attach to the wrong verdict.
-        note: feedbackState === 'thumbs_down' ? (feedbackNoteEl.value.trim() || null) : null,
+        note: feedbackState === 'thumbs_down' ? confirmedNote : null,
       });
     }
 
@@ -197,6 +226,7 @@
       // longer applies once the verdict is positive.
       feedbackNoteWrapEl.classList.remove('visible');
       feedbackNoteEl.value = '';
+      confirmedNote = null;
       sendFeedback();
     });
 
@@ -209,7 +239,24 @@
       sendFeedback();
     });
 
-    feedbackNoteEl.addEventListener('input', sendFeedback);
+    function submitNote() {
+      const text = feedbackNoteEl.value.trim();
+      if (!text) return; // nothing to submit
+      confirmedNote = text;
+      sendFeedback();
+      // Same "brief flash cue, never a silent nothing-happened" convention
+      // this app already uses elsewhere (flashRecordingStatus, the
+      // overlay's reset-flash) — a captured action needs visible
+      // confirmation, not just a state change nobody can see.
+      feedbackNoteConfirmEl.classList.add('visible');
+      setTimeout(() => feedbackNoteConfirmEl.classList.remove('visible'), 1200);
+    }
+
+    feedbackNoteEl.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      submitNote();
+    });
 
     // True while a model call is in flight — gates submission (one call at
     // a time; the input is also disabled below as the visible half of the
