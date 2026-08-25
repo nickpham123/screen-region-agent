@@ -35,16 +35,25 @@ const DEFAULTS = {
 // whisperLanguage maps to nodejs-whisper's whisperOptions.language, which
 // this file confirmed (by reading WhisperHelper.js directly, not the
 // package's top-level IOptions typing, which doesn't have a `language`
-// field at all — see decisions.md) becomes whisper.cpp's `-l` flag. English
-// keeps the current `.en`-only model (smaller, and whisper.cpp's `.en`
-// models are English-only regardless of -l); Vietnamese/Spanish use the
-// multilingual `base` model (same size class as base.en, not jumping
-// straight to `small`) with the language pinned explicitly rather than left
-// on whisper's own 'auto' default.
+// field at all — see decisions.md) becomes whisper.cpp's `-l` flag,
+// re-confirmed 2026-08-25 via whisper.cpp's own runtime log (`lang = vi`)
+// during real hands-on testing, not just read from source. English keeps
+// the current `.en`-only model (smaller, and whisper.cpp's `.en` models are
+// English-only regardless of -l).
+//
+// Vietnamese/Spanish upgraded from `base` to `small` 2026-08-25, on real
+// evidence, not a default upgrade: `base` produced genuinely garbled
+// Vietnamese output (real words assembled wrong, not accent/spelling
+// slips) across multiple real dictations, including one at ~5s — ruling out
+// short-clip length as the driver before concluding it was model size (see
+// decisions.md for the full two-check process and results). `small` is a
+// real cost, not a free upgrade: ~466MB vs. `base`'s 141MB, and slower
+// per-inference — accepted because `base`'s output wasn't merely
+// imperfect, it was unusable.
 const DICTATION_LANGUAGES = {
   en: { label: 'English', modelName: 'base.en', whisperLanguage: 'en' },
-  vi: { label: 'Vietnamese', modelName: 'base', whisperLanguage: 'vi' },
-  es: { label: 'Spanish', modelName: 'base', whisperLanguage: 'es' },
+  vi: { label: 'Vietnamese', modelName: 'small', whisperLanguage: 'vi' },
+  es: { label: 'Spanish', modelName: 'small', whisperLanguage: 'es' },
 };
 
 // Falls back to defaults on a missing file (first launch) or malformed JSON
