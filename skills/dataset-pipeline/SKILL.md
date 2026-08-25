@@ -40,6 +40,7 @@ Two goals now, not one: image-reading **accuracy** and response **quality** (hel
 2. 👍 examples → usable as-is for correctness, but still worth a quality pass — a correct answer can still be verbose or badly toned, and this hand-review pass is the only place that gets caught before it becomes training data
 3. 👎 examples → don't discard by default. Hand-edit the `answer` field into something both correct *and* well-written — the image+question pairing is still valuable even when the original answer wasn't. If `feedback_note` is set, read it first — it's the user's own account of what was wrong
 4. Drop: near-duplicate crops, corrupted images, empty/refused answers
+5. **Implicit signals, beyond explicit `feedback`/`feedback_note`** (decided 2026-08-25, not yet actionable — Phase 3 hasn't started): a user rephrasing/correcting their question right after an answer is a real negative signal — flag for priority review even without a 👎; a short conversation with no follow-up is only a weak tiebreaker signal, never ground truth alone (quick-and-correct looks identical to user-gave-up-and-left). An automated-judge pre-filter for this was considered and deferred — see `.claude/memory/decisions.md`
 
 ## Workflow: generating synthetic examples
 

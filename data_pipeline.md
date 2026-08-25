@@ -88,6 +88,12 @@ Fine-tuning is training for two things now, not one — image-reading **accuracy
 - 👎 examples: don't discard by default — hand-edit the answer into something both correct *and* well-written, since the *question + image* pairing is still valuable, only the answer was bad. If `feedback_note` (Phase 2.1) is set, read it first — it's the user's own word on what was actually wrong, a cheaper starting point than re-diagnosing from scratch
 - Cleaning pass: drop near-duplicate crops, corrupted images, empty/refused answers
 
+**Implicit signals worth prioritizing, beyond explicit `feedback`/`feedback_note`** (decided 2026-08-25, not yet actionable until Phase 3 actually starts — see `.claude/memory/decisions.md`):
+- A user rephrasing or correcting their question right after getting an answer ("no I meant...", "that's not right") — a real, likely-more-reliable-than-self-report negative signal. Flag for priority review even on conversations with no 👎 ever clicked.
+- A short conversation with no follow-up — only a weak, genuinely ambiguous signal (quick-and-correct looks identical to user-gave-up-and-left from turn count alone). Usable at most as a tiebreaker between otherwise-similar review candidates, never as ground truth on its own.
+
+An automated-judge-based pre-filter (extending Phase 5's Mistral-as-judge to also triage curation volume) was considered and explicitly deferred, not dropped — see decisions.md for why and its revisit trigger.
+
 This is the stage most worth doing manually early on — a few hundred *hand-reviewed* examples beat a few thousand unreviewed ones for a first fine-tune.
 
 ### 5. Synthetic augmentation
