@@ -1,10 +1,19 @@
-const { app, BrowserWindow, globalShortcut, ipcMain, screen } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, screen, nativeTheme, shell, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { createCaptureRegion } = require('./src/shared/capture');
 const { nodewhisper } = require('nodejs-whisper');
 const { handleUserTurn } = require('./src/shared/responseHandler');
 const { logConversation } = require('./src/shared/localLogger');
+const { loadSettings, saveSettings, DICTATION_LANGUAGES } = require('./src/shared/settings');
+
+// Phase 2.3: single in-memory copy of settings.json, read once at startup
+// and kept in sync on every save handler below (each one reassigns this
+// after writing to disk) — avoids a disk read on every hold-to-talk
+// transcription just to look up the current dictation language. Populated
+// for real inside app.whenReady(), before registerHotkey()'s first call —
+// declared here so every function below can close over the same binding.
+let appSettings;
 
 // Timestamped logging — makes separate gestures distinguishable in the log,
 // which mattered a lot while debugging the hotkey release path.
@@ -34,6 +43,15 @@ let holdToTalkActive = false;
 // through, would risk disagreeing with activation's answer if the cursor
 // moved off that display mid-drag — see decisions.md.
 let activeDisplayId = null;
+
+// Phase 2.3: set only while a Settings-initiated hotkey test's candidate is
+// the one currently registered (in place of the production accelerator).
+// null the rest of the time — the vastly more common case, and what every
+// other path through the gesture/watchdog machinery below already assumes.
+// { accelerator, triggerKeyCode, sender } — sender is the Main Window's
+// webContents, so the test result can be replied to directly without a
+// second module-level "which window asked" variable.
+let hotkeyTestMode = null;
 
 // Phase 2.2: the Main App Window (Captures/Settings/Help). Unlike the Chat
 // Panel, this window is meant to persist and be reopened/reused across the
@@ -577,6 +595,11 @@ function armStuckGestureTimer() {
     // drawing an already-dead gesture the next time the mouse moves.
     overlayWindow.webContents.send('cancel-gesture');
     overlayWindow.hide();
+    if (hotkeyTestMode) {
+      const { sender } = hotkeyTestMode;
+      hotkeyTestMode = null;
+      sender.send('hotkey-test-result', { status: 'timeout' });
+    }
     registerHotkey();
   }, timeout);
 }
@@ -627,6 +650,108 @@ function armHoldToTalkWatchdog() {
 function clearHoldToTalkWatchdog() {
   clearTimeout(holdToTalkWatchdog);
   holdToTalkWatchdog = null;
+}
+
+// Positions the overlay on the cursor's display, sends 'activate', shows and
+// focuses it, arms the watchdog — everything a gesture activation does after
+// UNREGISTER_SETTLE_MS, extracted verbatim from registerHotkey()'s own
+// callback so Phase 2.3's hotkey test (below) can run a real gesture through
+// the exact same mechanism instead of a parallel implementation of it.
+function activateGestureOverlay(triggerKeyCode) {
+  const cursor = screen.getCursorScreenPoint();
+
+  // Move the overlay to whichever display the cursor is on, per activation.
+  // The gesture is a mouse drag, so cursor position — not window focus, not
+  // the "main" display — is the direct signal for which screen the user is
+  // about to act on. One built-in Electron call, no Accessibility
+  // permission, no extra plumbing.
+  //
+  // Note this reuses getCursorScreenPoint(), which was measured returning a
+  // ~29px-stale position when the cursor is moving fast (see the
+  // activation-trail bug in decisions.md). Accepted deliberately here:
+  // display selection only breaks if the cursor crosses a display boundary
+  // within a few ms of the keypress, and the consequence would be a one-off
+  // overlay on the neighbouring screen, not a wrong crop.
+  const display = screen.getDisplayNearestPoint(cursor);
+  activeDisplayId = display.id;
+  overlayWindow.setBounds(display.bounds);
+
+  // Read bounds back after the move, so the cursor-relative activation point
+  // is expressed against the display the overlay now occupies.
+  const bounds = overlayWindow.getBounds();
+  overlayWindow.webContents.send('activate', {
+    x: cursor.x - bounds.x,
+    y: cursor.y - bounds.y,
+    triggerKeyCode,
+  });
+
+  overlayWindow.show();
+  // .focus() alone doesn't reliably win real OS focus-steal on macOS when
+  // called from a global-shortcut callback (the app wasn't already
+  // frontmost) — force it, then focus the window itself.
+  app.focus({ steal: true });
+  overlayWindow.focus();
+
+  seenTriggerKey = false;
+  armStuckGestureTimer();
+}
+
+// Phase 2.3 — tests a candidate accelerator via a real hold-drag-release
+// gesture, reusing the exact overlay/watchdog machinery a production gesture
+// already goes through (activateGestureOverlay, armStuckGestureTimer,
+// selection-finalized's own bbox logic) rather than a parallel test harness.
+// See decisions.md.
+//
+// Runs with the production hotkey unregistered for the test's bounded
+// duration — the same exposure window a real gesture already has today,
+// because the gesture/watchdog state this reuses (stuckGestureTimer,
+// seenTriggerKey, activeDisplayId, the one overlayWindow) is single-flight:
+// there's only ever one gesture's worth of it, so a candidate test and a
+// real production gesture can't run through it at once without colliding.
+// Registering the candidate is what actually starts the test — the function
+// just arms it; the real gesture happens when the user does the hold-drag-
+// release themselves.
+function startHotkeyTest(accelerator, triggerKeyCode, sender) {
+  if (hotkeyTestMode || chatPanelWindow || holdToTalkActive) {
+    sender.send('hotkey-test-result', { status: 'busy' });
+    return;
+  }
+
+  globalShortcut.unregisterAll();
+  const registered = globalShortcut.register(accelerator, () => {
+    setTimeout(() => activateGestureOverlay(triggerKeyCode), UNREGISTER_SETTLE_MS);
+  });
+
+  if (!registered) {
+    // Already claimed by macOS or another app — rules the candidate out
+    // before any gesture is even attempted. Nothing was ever unavailable
+    // beyond this synchronous check, so just restore production directly.
+    registerHotkey();
+    sender.send('hotkey-test-result', { status: 'already-in-use' });
+    return;
+  }
+
+  hotkeyTestMode = { accelerator, triggerKeyCode, sender };
+  sender.send('hotkey-test-result', { status: 'armed' });
+}
+
+// Re-arms the same candidate for another attempt after a below-minimum-size
+// gesture, without ending the test — see selection-finalized's test branch
+// for why that case is inconclusive rather than a failure.
+function rearmHotkeyTest() {
+  const { accelerator, triggerKeyCode } = hotkeyTestMode;
+  globalShortcut.unregisterAll();
+  const registered = globalShortcut.register(accelerator, () => {
+    setTimeout(() => activateGestureOverlay(triggerKeyCode), UNREGISTER_SETTLE_MS);
+  });
+  if (!registered) {
+    // Shouldn't happen — it just worked a moment ago — but don't strand the
+    // hotkey if it does.
+    const { sender } = hotkeyTestMode;
+    hotkeyTestMode = null;
+    registerHotkey();
+    sender.send('hotkey-test-result', { status: 'already-in-use' });
+  }
 }
 
 function registerHotkey() {
@@ -689,44 +814,7 @@ function registerHotkey() {
     // still registered could claim its own key's events during the gesture.
     globalShortcut.unregisterAll();
 
-    setTimeout(() => {
-      const cursor = screen.getCursorScreenPoint();
-
-      // Move the overlay to whichever display the cursor is on, per
-      // activation. The gesture is a mouse drag, so cursor position — not
-      // window focus, not the "main" display — is the direct signal for which
-      // screen the user is about to act on. One built-in Electron call, no
-      // Accessibility permission, no extra plumbing.
-      //
-      // Note this reuses getCursorScreenPoint(), which was measured returning
-      // a ~29px-stale position when the cursor is moving fast (see the
-      // activation-trail bug in decisions.md). Accepted deliberately here:
-      // display selection only breaks if the cursor crosses a display
-      // boundary within a few ms of the keypress, and the consequence would
-      // be a one-off overlay on the neighbouring screen, not a wrong crop.
-      const display = screen.getDisplayNearestPoint(cursor);
-      activeDisplayId = display.id;
-      overlayWindow.setBounds(display.bounds);
-
-      // Read bounds back after the move, so the cursor-relative activation
-      // point is expressed against the display the overlay now occupies.
-      const bounds = overlayWindow.getBounds();
-      overlayWindow.webContents.send('activate', {
-        x: cursor.x - bounds.x,
-        y: cursor.y - bounds.y,
-        triggerKeyCode,
-      });
-
-      overlayWindow.show();
-      // .focus() alone doesn't reliably win real OS focus-steal on macOS when
-      // called from a global-shortcut callback (the app wasn't already
-      // frontmost) — force it, then focus the window itself.
-      app.focus({ steal: true });
-      overlayWindow.focus();
-
-      seenTriggerKey = false;
-      armStuckGestureTimer();
-    }, UNREGISTER_SETTLE_MS);
+    setTimeout(() => activateGestureOverlay(triggerKeyCode), UNREGISTER_SETTLE_MS);
     });
 
     // A false here is itself a result: the accelerator is already claimed
@@ -775,6 +863,20 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(() => {
+    // Phase 2.3: load persisted settings before anything that depends on
+    // them is created — the hotkey accelerator and the theme both need to
+    // be correct from the very first window/registration, not patched in
+    // after the fact.
+    appSettings = loadSettings();
+    ACCELERATOR_CANDIDATES[0] = {
+      accelerator: appSettings.hotkeyAccelerator,
+      triggerKeyCode: appSettings.hotkeyTriggerKeyCode,
+    };
+    // 'system' is nativeTheme's own default and merely removes any prior
+    // override, so this is a no-op on first launch — setting it
+    // unconditionally on every launch is simpler than special-casing that.
+    nativeTheme.themeSource = appSettings.theme;
+
     // Phase 2.2: without this, the app's Dock activation policy stays
     // "background only" on this Electron install/environment — confirmed
     // directly via a throwaway diagnostic (osascript's "background only"
@@ -798,6 +900,93 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 ipcMain.on('debug-log', (event, msg) => log('[renderer]', msg));
+
+// Phase 2.3 — Settings page (system_design_plan.md §3.8). All requests come
+// from the Main App Window only, so replying via event.sender is safe
+// without a sender-id check the way the Chat Panel's per-session handlers
+// need one — there's exactly one Main Window, a persistent singleton, not
+// something recreated per interaction.
+
+ipcMain.on('settings-get', (event) => {
+  event.sender.send('settings-data', appSettings);
+});
+
+ipcMain.on('settings-set-display-name', (event, displayName) => {
+  appSettings = saveSettings({ displayName });
+  event.sender.send('settings-data', appSettings);
+});
+
+ipcMain.on('settings-set-theme', (event, theme) => {
+  appSettings = saveSettings({ theme });
+  nativeTheme.themeSource = theme; // takes effect immediately, app-wide
+  event.sender.send('settings-data', appSettings);
+});
+
+ipcMain.on('settings-set-dictation-language', (event, dictationLanguage) => {
+  appSettings = saveSettings({ dictationLanguage });
+  event.sender.send('settings-data', appSettings);
+});
+
+// Hotkey test flow (Phase 2.3, decisions.md — reuses the real gesture
+// machinery, see startHotkeyTest()/rearmHotkeyTest() above).
+ipcMain.on('hotkey-test-start', (event, { accelerator, triggerKeyCode }) => {
+  startHotkeyTest(accelerator, triggerKeyCode, event.sender);
+});
+
+// User-initiated abort (closed the test UI, or gave up before completing
+// the gesture) — not just the watchdog's own timeout path. Safe to call
+// unconditionally; a no-op if no test is running.
+ipcMain.on('hotkey-test-cancel', () => {
+  if (!hotkeyTestMode) return;
+  clearStuckGestureTimer();
+  overlayWindow.webContents.send('cancel-gesture');
+  overlayWindow.hide();
+  hotkeyTestMode = null;
+  registerHotkey();
+});
+
+// Only reachable after a real 'pass' result — the renderer gates the Save
+// control on that. Persists the tested candidate as the production
+// accelerator and re-registers it immediately.
+ipcMain.on('hotkey-save', (event, { accelerator, triggerKeyCode }) => {
+  ACCELERATOR_CANDIDATES[0] = { accelerator, triggerKeyCode };
+  appSettings = saveSettings({ hotkeyAccelerator: accelerator, hotkeyTriggerKeyCode: triggerKeyCode });
+  registerHotkey();
+  event.sender.send('settings-data', appSettings);
+});
+
+ipcMain.on('data-open-folder', () => {
+  shell.openPath(app.getPath('userData'));
+});
+
+// Destructive — confirmed via a native dialog before anything is deleted,
+// same "confirm before an irreversible action" posture as the rest of this
+// project (Electron's built-in dialog module, no new dependency). Deletes
+// conversations.jsonl and every file under captures/, not settings.json
+// itself — clearing captured data shouldn't also reset the user's Settings.
+ipcMain.on('data-clear-all', async (event) => {
+  const { response } = await dialog.showMessageBox(mainWindow, {
+    type: 'warning',
+    buttons: ['Cancel', 'Delete everything'],
+    defaultId: 0,
+    cancelId: 0,
+    message: 'Delete all captured conversations?',
+    detail: 'This permanently deletes conversations.jsonl and every stored capture image. This cannot be undone.',
+  });
+  if (response !== 1) {
+    event.sender.send('data-clear-result', { status: 'cancelled' });
+    return;
+  }
+  try {
+    fs.rmSync(path.join(app.getPath('userData'), 'conversations.jsonl'), { force: true });
+    fs.rmSync(CAPTURES_DIR, { recursive: true, force: true });
+    log('[data-privacy] Cleared all captured conversations and images.');
+    event.sender.send('data-clear-result', { status: 'cleared' });
+  } catch (err) {
+    log('[data-privacy] Failed to clear data:', err.message);
+    event.sender.send('data-clear-result', { status: 'error', message: err.message });
+  }
+});
 
 // Auto-repeat keydown from the still-held trigger key. Re-arms the watchdog
 // so a slow-but-active gesture is never force-closed mid-draw. Guarded on
@@ -865,10 +1054,18 @@ ipcMain.on('hold-to-talk-end', async (event, audioPayload) => {
     wavPath = path.join(VOICE_TMP_DIR, `voice-${Date.now()}.wav`);
     fs.writeFileSync(wavPath, floatTo16BitWav(samples, sampleRate));
 
+    // Phase 2.3: model + pinned language come from the Settings dictation-
+    // language control (default 'en', unchanged from before this step).
+    // whisperOptions.language is nested, not a top-level IOptions field —
+    // confirmed by reading nodejs-whisper's own type defs and the source
+    // that turns it into whisper.cpp's `-l` flag, not assumed from the name
+    // alone (see decisions.md — same standard as extractTranscriptText()).
+    const { modelName, whisperLanguage } = DICTATION_LANGUAGES[appSettings.dictationLanguage] || DICTATION_LANGUAGES.en;
     const rawTranscript = await nodewhisper(wavPath, {
-      modelName: 'base.en',
-      autoDownloadModelName: 'base.en',
+      modelName,
+      autoDownloadModelName: modelName,
       removeWavFileAfterTranscription: false, // cleaned up ourselves below regardless of outcome
+      whisperOptions: { language: whisperLanguage },
       logger: { log: () => {}, debug: () => {}, error: (...args) => log('[whisper]', ...args) },
     });
     const text = extractTranscriptText(rawTranscript);
@@ -890,6 +1087,27 @@ ipcMain.on('hold-to-talk-end', async (event, audioPayload) => {
 
 ipcMain.on('selection-finalized', async (event, bbox) => {
   clearStuckGestureTimer();
+
+  if (hotkeyTestMode) {
+    overlayWindow.hide();
+    const { accelerator, sender } = hotkeyTestMode;
+    if (!bbox) {
+      // Below minimum size — inconclusive, not a failure. The candidate is
+      // still a perfectly plausible working accelerator; the user just
+      // didn't drag far enough this attempt. Re-arm immediately for another
+      // try rather than reverting to production — same accelerator stays
+      // registered, no need to make them re-click "Test".
+      log(`[hotkey-test] Gesture below minimum size — re-arming ${accelerator} for another attempt.`);
+      sender.send('hotkey-test-result', { status: 'too-small' });
+      rearmHotkeyTest();
+      return;
+    }
+    log(`[hotkey-test] ${accelerator} passed — real gesture finalized.`);
+    hotkeyTestMode = null;
+    registerHotkey(); // restore production; candidate isn't live until Save
+    sender.send('hotkey-test-result', { status: 'pass' });
+    return;
+  }
 
   if (!bbox) {
     log('Selection ignored (below minimum size)');

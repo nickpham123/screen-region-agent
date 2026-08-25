@@ -1,0 +1,69 @@
+/* Shared design tokens for every window in this app (Main App Window today;
+ * the Overlay and Chat Panel keep their own minimal, purpose-built styling
+ * for now — nothing about their existing look was broken, so this doesn't
+ * touch them, see decisions.md).
+ *
+ * Mechanism worth naming: Electron's nativeTheme.themeSource directly
+ * controls what `prefers-color-scheme` evaluates to, app-wide, in every
+ * renderer — setting it to 'light'/'dark' overrides the OS setting for the
+ * whole app; 'system' (the default) removes the override and lets the real
+ * OS appearance flow through. That means this file's dark-mode block is not
+ * just a "system dark mode" fallback, it's also what the Settings page's
+ * Theme control actually flips — src/shared/settings.js sets
+ * nativeTheme.themeSource, Electron does the rest, no IPC broadcast and no
+ * per-window listener needed for the swap itself to take effect live.
+ */
+
+:root {
+  /* Color tokens — light (default) */
+  --color-bg: #f5f5f5;
+  --color-bg-elevated: #ffffff;
+  --color-bg-hover: #ececec;
+  --color-fg: #1a1a1a;
+  --color-fg-muted: #6b6b6b;
+  --color-border: #dcdcdc;
+  --color-accent: #2563eb;
+  --color-accent-fg: #ffffff;
+  --color-danger: #c0362c;
+
+  /* Spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+
+  /* Sans for chrome (nav, controls, labels) */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  /* Serif for page-level headings — Wispr Flow-inspired direction */
+  --font-serif: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #1a1a1a;
+    --color-bg-elevated: #242424;
+    --color-bg-hover: #2e2e2e;
+    --color-fg: #e8e8e8;
+    --color-fg-muted: #9a9a9a;
+    --color-border: #383838;
+    --color-accent: #5b8ff9;
+    --color-accent-fg: #101010;
+    --color-danger: #e0685e;
+  }
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+}
+
+h1, h2, h3 {
+  font-family: var(--font-serif);
+  font-weight: 500;
+}

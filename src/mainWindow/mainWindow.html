@@ -3,20 +3,22 @@
 <head>
   <meta charset="UTF-8" />
   <title>Screen-Region Agent</title>
+  <link rel="stylesheet" href="../shared/theme.css" />
+  <link rel="stylesheet" href="../shared/assets/tabler-icons/tabler-icons.css" />
   <style>
+    /* Phase 2.2's shell, retrofitted onto theme.css's tokens (2.3) — same
+     * structure/behavior as before, just no more hardcoded colors. */
     body {
       margin: 0;
       display: flex;
       height: 100vh;
-      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-      background: #1e1e1e;
-      color: #e8e8e8;
+      overflow: hidden;
     }
     #sidebar {
       width: 160px;
       flex-shrink: 0;
-      border-right: 1px solid #333;
-      padding: 12px 0;
+      border-right: 1px solid var(--color-border);
+      padding: var(--space-3) 0;
       box-sizing: border-box;
     }
     #sidebar button {
@@ -25,22 +27,27 @@
       text-align: left;
       background: none;
       border: none;
-      color: #ccc;
-      padding: 8px 16px;
+      color: var(--color-fg-muted);
+      padding: var(--space-2) var(--space-4);
       font-size: 13px;
       font-family: inherit;
       cursor: pointer;
     }
     #sidebar button:hover {
-      background: #2a2a2a;
+      background: var(--color-bg-hover);
     }
     #sidebar button.active {
-      background: #333;
-      color: white;
+      background: var(--color-bg-hover);
+      color: var(--color-fg);
+    }
+    #sidebar button i {
+      margin-right: var(--space-2);
+      font-size: 15px;
+      vertical-align: -2px;
     }
     #content {
       flex: 1;
-      padding: 24px;
+      padding: var(--space-5);
       overflow-y: auto;
     }
     .view {
@@ -50,38 +57,218 @@
       display: block;
     }
     .view h1 {
-      font-size: 16px;
-      font-weight: 600;
-      margin: 0 0 8px;
+      font-size: 20px;
+      margin: 0 0 var(--space-4);
     }
-    .view p {
+    .view > p {
       font-size: 13px;
-      color: #999;
+      color: var(--color-fg-muted);
       line-height: 1.5;
+    }
+
+    /* Settings rows */
+    .settings-row {
+      display: flex;
+      gap: var(--space-5);
+      padding: var(--space-4) 0;
+      border-bottom: 1px solid var(--color-border);
+    }
+    .settings-row:last-child {
+      border-bottom: none;
+    }
+    .settings-row-label {
+      width: 180px;
+      flex-shrink: 0;
+    }
+    .settings-row-label strong {
+      display: block;
+      font-size: 13px;
+      margin-bottom: 2px;
+    }
+    .settings-row-label p {
+      font-size: 12px;
+      color: var(--color-fg-muted);
+      margin: 0;
+      line-height: 1.4;
+    }
+    .settings-row-control {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: var(--space-2);
+      font-size: 13px;
+    }
+    .settings-row-control label {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-1);
+      margin-right: var(--space-4);
+      cursor: pointer;
+    }
+    .settings-row-control input[type="text"],
+    .settings-row-control select {
+      font-family: inherit;
+      font-size: 13px;
+      padding: var(--space-1) var(--space-2);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      background: var(--color-bg-elevated);
+      color: var(--color-fg);
+      min-width: 200px;
+    }
+    .settings-row-control button {
+      font-family: inherit;
+      font-size: 12px;
+      padding: var(--space-1) var(--space-3);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      background: var(--color-bg-elevated);
+      color: var(--color-fg);
+      cursor: pointer;
+    }
+    .settings-row-control button:hover {
+      background: var(--color-bg-hover);
+    }
+    .settings-row-control button:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+    .settings-row-control button.danger {
+      color: var(--color-danger);
+      border-color: var(--color-danger);
+    }
+    .settings-row-control code {
+      background: var(--color-bg-hover);
+      padding: 2px 6px;
+      border-radius: var(--radius-sm);
+      font-size: 12px;
+    }
+    .settings-status {
+      font-size: 12px;
+      color: var(--color-fg-muted);
+      margin: 0;
+    }
+    .settings-status.error {
+      color: var(--color-danger);
+    }
+    .settings-status.success {
+      color: var(--color-accent);
+    }
+    #hotkeyTestPanel {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-2);
+      align-items: flex-start;
+      padding: var(--space-2);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      background: var(--color-bg-hover);
+      width: 100%;
+      box-sizing: border-box;
+    }
+    #hotkeyTestPanel[hidden] {
+      display: none;
+    }
+    .hotkey-test-actions {
+      display: flex;
+      gap: var(--space-2);
     }
   </style>
 </head>
 <body>
   <div id="sidebar">
-    <button id="navCaptures" class="active" data-view="captures">Captures</button>
-    <button id="navSettings" data-view="settings">Settings</button>
-    <button id="navHelp" data-view="help">Help</button>
+    <button id="navCaptures" class="active" data-view="captures"><i class="ti ti-photo"></i>Captures</button>
+    <button id="navSettings" data-view="settings"><i class="ti ti-settings"></i>Settings</button>
+    <button id="navHelp" data-view="help"><i class="ti ti-help-circle"></i>Help</button>
   </div>
   <div id="content">
-    <!--
-      Phase 2.2 is shell + navigation only — each view below is a placeholder
-      stub. Real content (the reverse-chronological conversations.jsonl list,
-      the actual Settings controls, the static usage guide) is 2.4/2.3/2.5's
-      job respectively, not this step's — see implementation_plan.md.
-    -->
     <div id="viewCaptures" class="view active">
       <h1>Captures</h1>
       <p>Coming in Phase 2.4 — a reverse-chronological list of logged conversations.</p>
     </div>
+
     <div id="viewSettings" class="view">
       <h1>Settings</h1>
-      <p>Coming in Phase 2.3 — hotkey, display name, theme, dictation language, data and privacy.</p>
+
+      <section class="settings-row">
+        <div class="settings-row-label">
+          <strong>Hotkey</strong>
+          <p>Hold this combo, drag to select a region, release.</p>
+        </div>
+        <div class="settings-row-control">
+          <div>Current: <code id="hotkeyCurrentValue">…</code></div>
+          <button id="hotkeyRecordBtn"><i class="ti ti-keyboard"></i> Change hotkey</button>
+          <div id="hotkeyTestPanel" hidden>
+            <p class="settings-status" id="hotkeyTestStatus"></p>
+            <div class="hotkey-test-actions">
+              <button id="hotkeyTestBtn" hidden>Test this combo</button>
+              <button id="hotkeySaveBtn" hidden>Save</button>
+              <button id="hotkeyCancelBtn">Cancel</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-row">
+        <div class="settings-row-label">
+          <strong>Display name</strong>
+          <p>Local only — not used for sign-in.</p>
+        </div>
+        <div class="settings-row-control">
+          <input id="displayNameInput" type="text" placeholder="Your name" />
+        </div>
+      </section>
+
+      <section class="settings-row">
+        <div class="settings-row-label">
+          <strong>Theme</strong>
+          <p>Applies immediately, across every window.</p>
+        </div>
+        <div class="settings-row-control">
+          <label><input type="radio" name="theme" value="light" /> Light</label>
+          <label><input type="radio" name="theme" value="dark" /> Dark</label>
+          <label><input type="radio" name="theme" value="system" /> System</label>
+        </div>
+      </section>
+
+      <section class="settings-row">
+        <div class="settings-row-label">
+          <strong>Dictation language</strong>
+          <p>Used for hold-to-talk transcription. Changing this needs its own accuracy check per language — not assumed to work from the model swap alone.</p>
+        </div>
+        <div class="settings-row-control">
+          <select id="dictationSelect">
+            <option value="en">English</option>
+            <option value="vi">Vietnamese</option>
+            <option value="es">Spanish</option>
+          </select>
+        </div>
+      </section>
+
+      <section class="settings-row">
+        <div class="settings-row-label">
+          <strong>App language</strong>
+          <p>Coming soon.</p>
+        </div>
+        <div class="settings-row-control">
+          <select disabled><option>English</option></select>
+        </div>
+      </section>
+
+      <section class="settings-row">
+        <div class="settings-row-label">
+          <strong>Data and privacy</strong>
+          <p>Everything stays on this device. No screen content leaves it without an active query.</p>
+        </div>
+        <div class="settings-row-control">
+          <button id="openFolderBtn"><i class="ti ti-folder"></i> Open storage folder</button>
+          <button id="clearAllBtn" class="danger"><i class="ti ti-trash"></i> Clear all data</button>
+          <p class="settings-status" id="clearAllStatus"></p>
+        </div>
+      </section>
     </div>
+
     <div id="viewHelp" class="view">
       <h1>Help</h1>
       <p>Coming in Phase 2.5 — a static in-app usage guide.</p>
@@ -101,6 +288,202 @@
         btn.classList.add('active');
         document.getElementById('view' + btn.dataset.view[0].toUpperCase() + btn.dataset.view.slice(1)).classList.add('active');
       });
+    });
+
+    // ---- Settings (Phase 2.3) ----
+
+    const hotkeyCurrentValue = document.getElementById('hotkeyCurrentValue');
+    const hotkeyRecordBtn = document.getElementById('hotkeyRecordBtn');
+    const hotkeyTestPanel = document.getElementById('hotkeyTestPanel');
+    const hotkeyTestStatus = document.getElementById('hotkeyTestStatus');
+    const hotkeyTestBtn = document.getElementById('hotkeyTestBtn');
+    const hotkeySaveBtn = document.getElementById('hotkeySaveBtn');
+    const hotkeyCancelBtn = document.getElementById('hotkeyCancelBtn');
+    const displayNameInput = document.getElementById('displayNameInput');
+    const themeRadios = document.querySelectorAll('input[name="theme"]');
+    const dictationSelect = document.getElementById('dictationSelect');
+    const openFolderBtn = document.getElementById('openFolderBtn');
+    const clearAllBtn = document.getElementById('clearAllBtn');
+    const clearAllStatus = document.getElementById('clearAllStatus');
+
+    let currentSettings = null;
+
+    function applySettingsToUI(settings) {
+      currentSettings = settings;
+      hotkeyCurrentValue.textContent = settings.hotkeyAccelerator;
+      // Don't stomp on the user's in-progress typing — only sync from the
+      // main process if the field isn't currently focused.
+      if (document.activeElement !== displayNameInput) {
+        displayNameInput.value = settings.displayName || '';
+      }
+      themeRadios.forEach((r) => { r.checked = r.value === settings.theme; });
+      dictationSelect.value = settings.dictationLanguage;
+    }
+
+    window.mainWindowAPI.onSettingsData(applySettingsToUI);
+    window.mainWindowAPI.getSettings();
+
+    displayNameInput.addEventListener('change', () => {
+      window.mainWindowAPI.setDisplayName(displayNameInput.value);
+    });
+
+    themeRadios.forEach((r) => {
+      r.addEventListener('change', () => {
+        if (r.checked) window.mainWindowAPI.setTheme(r.value);
+      });
+    });
+
+    dictationSelect.addEventListener('change', () => {
+      window.mainWindowAPI.setDictationLanguage(dictationSelect.value);
+    });
+
+    openFolderBtn.addEventListener('click', () => window.mainWindowAPI.openDataFolder());
+
+    clearAllBtn.addEventListener('click', () => {
+      clearAllStatus.textContent = '';
+      clearAllStatus.className = 'settings-status';
+      window.mainWindowAPI.clearAllData();
+    });
+
+    window.mainWindowAPI.onDataClearResult((result) => {
+      if (result.status === 'cleared') {
+        clearAllStatus.textContent = 'All captured conversations and images deleted.';
+        clearAllStatus.className = 'settings-status success';
+      } else if (result.status === 'error') {
+        clearAllStatus.textContent = 'Failed to clear data: ' + result.message;
+        clearAllStatus.className = 'settings-status error';
+      }
+      // 'cancelled' — the confirm dialog was dismissed — leaves no message,
+      // nothing happened.
+    });
+
+    // -- Hotkey record → test → save --
+    //
+    // Recording captures the next full modifier+key combo directly in this
+    // renderer (no IPC yet — this is just building a candidate string).
+    // Option/Alt is rejected here, before a live test is ever spent on
+    // something decisions.md already establishes as a guaranteed failure
+    // (macOS's text-input layer eats the trigger key). Every other known
+    // failure class (OS-reserved combos, input-method interception like
+    // Control+Space, chord-timing order) has no static signature, so those
+    // still need the real gesture test in main.js.
+
+    // Electron accelerator key names for the codes this recorder accepts.
+    // Deliberately small (digits, letters, Space) rather than a full table —
+    // covers every realistic hotkey choice without building out a mapping
+    // for keys nobody would actually pick here.
+    function codeToAcceleratorKey(code) {
+      if (code.startsWith('Digit')) return code.slice(5);
+      if (code.startsWith('Key')) return code.slice(3);
+      if (code === 'Space') return 'Space';
+      return null;
+    }
+
+    let recording = false;
+    function onRecordKeydown(e) {
+      e.preventDefault();
+      if (['ControlLeft', 'ControlRight', 'ShiftLeft', 'ShiftRight', 'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight'].includes(e.code)) {
+        return; // waiting for a real trigger key on top of the modifier(s)
+      }
+      if (e.altKey) {
+        showHotkeyStatus('Option/Alt can’t be used — macOS intercepts it before this app ever sees the key. Try a different modifier.', 'error');
+        return; // stay in recording mode, let them try again
+      }
+      if (!e.ctrlKey && !e.shiftKey && !e.metaKey) {
+        showHotkeyStatus('Needs at least one modifier key, like Control.', 'error');
+        return;
+      }
+      const key = codeToAcceleratorKey(e.code);
+      if (!key) {
+        showHotkeyStatus('That key isn’t supported yet — try a letter, digit, or Space.', 'error');
+        return;
+      }
+      const modifiers = [];
+      if (e.ctrlKey) modifiers.push('Control');
+      if (e.shiftKey) modifiers.push('Shift');
+      if (e.metaKey) modifiers.push('Command');
+      const accelerator = modifiers.join('+') + '+' + key;
+
+      stopRecording();
+      pendingCandidate = { accelerator, triggerKeyCode: e.code };
+      hotkeyTestPanel.hidden = false;
+      hotkeyTestBtn.hidden = false;
+      hotkeySaveBtn.hidden = true;
+      showHotkeyStatus('Recorded ' + accelerator + '. Click "Test this combo" to verify it with a real gesture.', '');
+    }
+
+    function stopRecording() {
+      recording = false;
+      document.removeEventListener('keydown', onRecordKeydown, true);
+      hotkeyRecordBtn.textContent = 'Change hotkey';
+    }
+
+    function showHotkeyStatus(text, kind) {
+      hotkeyTestStatus.textContent = text;
+      hotkeyTestStatus.className = 'settings-status' + (kind ? ' ' + kind : '');
+    }
+
+    let pendingCandidate = null;
+
+    hotkeyRecordBtn.addEventListener('click', () => {
+      if (recording) { stopRecording(); return; }
+      recording = true;
+      pendingCandidate = null;
+      hotkeyTestPanel.hidden = false;
+      hotkeyTestBtn.hidden = true;
+      hotkeySaveBtn.hidden = true;
+      hotkeyRecordBtn.textContent = 'Press your new combo…';
+      showHotkeyStatus('Press a modifier + key combo now (e.g. Control+2).', '');
+      document.addEventListener('keydown', onRecordKeydown, true);
+    });
+
+    hotkeyTestBtn.addEventListener('click', () => {
+      if (!pendingCandidate) return;
+      hotkeyTestBtn.hidden = true;
+      window.mainWindowAPI.startHotkeyTest(pendingCandidate.accelerator, pendingCandidate.triggerKeyCode);
+    });
+
+    hotkeyCancelBtn.addEventListener('click', () => {
+      stopRecording();
+      window.mainWindowAPI.cancelHotkeyTest();
+      hotkeyTestPanel.hidden = true;
+      pendingCandidate = null;
+    });
+
+    hotkeySaveBtn.addEventListener('click', () => {
+      if (!pendingCandidate) return;
+      window.mainWindowAPI.saveHotkey(pendingCandidate.accelerator, pendingCandidate.triggerKeyCode);
+      hotkeyTestPanel.hidden = true;
+      pendingCandidate = null;
+    });
+
+    window.mainWindowAPI.onHotkeyTestResult((result) => {
+      switch (result.status) {
+        case 'armed':
+          // Visible "paused" indicator, per explicit ask: a silent gap here
+          // would read as broken, even though nothing is.
+          showHotkeyStatus('Testing — your normal hotkey (' + currentSettings.hotkeyAccelerator + ') is paused. Hold ' + pendingCandidate.accelerator + ' and drag anywhere on screen, then release.', '');
+          break;
+        case 'too-small':
+          showHotkeyStatus('Selection was too small — still testing. Hold ' + pendingCandidate.accelerator + ' and drag a bit further this time.', '');
+          break;
+        case 'pass':
+          showHotkeyStatus('✓ Works. Click Save to make this your hotkey.', 'success');
+          hotkeySaveBtn.hidden = false;
+          break;
+        case 'timeout':
+          showHotkeyStatus('Didn’t detect a release — try again, or pick a different combo.', 'error');
+          hotkeyTestBtn.hidden = false;
+          break;
+        case 'already-in-use':
+          showHotkeyStatus('That combo’s already used by macOS or another app — pick a different one.', 'error');
+          hotkeyTestBtn.hidden = false;
+          break;
+        case 'busy':
+          showHotkeyStatus('Close the open Chat Panel before testing a new hotkey.', 'error');
+          hotkeyTestBtn.hidden = false;
+          break;
+      }
     });
   </script>
 </body>
