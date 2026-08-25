@@ -277,9 +277,27 @@ function createChatPanelWindow(cropPath, fullPath, displayId) {
   }
   ipcMain.on('chat-retry', onRetry);
 
+  // Feedback state for this session (Phase 2.1) — set via the title bar's
+  // 👍/👎 buttons, tracked in this closure exactly like `turns` above so it
+  // survives however the window actually closes (button click that then
+  // closes the panel, Cmd+W, etc.), not read from the renderer at close
+  // time. "Settable once per conversation" means one feedback value for
+  // the whole session, not per-turn — the renderer may still send updates
+  // (switching 👍↔👎, editing the note) any number of times before close;
+  // only the latest value at close is what gets logged.
+  let feedback = null;
+  let feedbackNote = null;
+  function onFeedbackSet(event, payload) {
+    if (event.sender.id !== chatPanelWindow.webContents.id) return;
+    feedback = payload.feedback;
+    feedbackNote = payload.note;
+  }
+  ipcMain.on('chat-feedback-set', onFeedbackSet);
+
   chatPanelWindow.on('closed', () => {
     ipcMain.removeListener('chat-turn-added', onTurnAdded);
     ipcMain.removeListener('chat-retry', onRetry);
+    ipcMain.removeListener('chat-feedback-set', onFeedbackSet);
     if (inFlightController) {
       inFlightController.abort();
       inFlightController = null;
@@ -294,7 +312,7 @@ function createChatPanelWindow(cropPath, fullPath, displayId) {
       registerHotkey();
     }
     chatPanelWindow = null;
-    endChatSession(cropPath, fullPath, turns, startedAt);
+    endChatSession(cropPath, fullPath, turns, startedAt, feedback, feedbackNote);
   });
 }
 
@@ -332,7 +350,7 @@ function trimToCompleteExchanges(turns) {
 // no-op — no callback ever fired, so there was no hook left to give
 // feedback from — and (b) stranded the hotkey indefinitely with no
 // watchdog if this function ever failed to run. See decisions.md.
-function endChatSession(cropPath, fullPath, turns, startedAt) {
+function endChatSession(cropPath, fullPath, turns, startedAt, feedback, feedbackNote) {
   const loggableTurns = trimToCompleteExchanges(turns);
   if (loggableTurns.length === 0) {
     log('Chat Panel closed with no complete exchange — discarding temp captures.');
@@ -354,6 +372,8 @@ function endChatSession(cropPath, fullPath, turns, startedAt) {
         cropPath: permCropPath,
         contextPath: permFullPath,
         turns: loggableTurns,
+        feedback,
+        feedbackNote,
         startedAt,
         endedAt: new Date().toISOString(),
       });

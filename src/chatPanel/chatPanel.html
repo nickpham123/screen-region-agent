@@ -13,6 +13,54 @@
       background: #1e1e1e;
       color: #e8e8e8;
     }
+    /* Phase 2.1: feedback buttons, persistent for the whole session. */
+    #titlebar {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 4px;
+      padding: 6px 10px;
+      border-bottom: 1px solid #333;
+      -webkit-app-region: drag; /* lets the bar still drag-move the window */
+    }
+    #titlebar button {
+      -webkit-app-region: no-drag; /* buttons themselves must stay clickable */
+      background: none;
+      border: none;
+      border-radius: 6px;
+      font-size: 15px;
+      padding: 3px 7px;
+      cursor: pointer;
+      opacity: 0.6;
+    }
+    #titlebar button:hover {
+      opacity: 0.85;
+      background: #333;
+    }
+    #titlebar button.active {
+      opacity: 1;
+      background: #333;
+    }
+    #feedbackNoteWrap {
+      display: none;
+      padding: 0 10px 8px;
+      border-bottom: 1px solid #333;
+    }
+    #feedbackNoteWrap.visible {
+      display: block;
+    }
+    #feedbackNote {
+      width: 100%;
+      box-sizing: border-box;
+      background: #2a2a2a;
+      color: #e8e8e8;
+      border: 1px solid #444;
+      border-radius: 6px;
+      padding: 6px 8px;
+      font-size: 12px;
+      font-family: inherit;
+      outline: none;
+    }
     #history {
       flex: 1;
       overflow-y: auto;
@@ -87,6 +135,13 @@
   </style>
 </head>
 <body>
+  <div id="titlebar">
+    <button id="feedbackUp" title="Good response">👍</button>
+    <button id="feedbackDown" title="Bad response">👎</button>
+  </div>
+  <div id="feedbackNoteWrap">
+    <input id="feedbackNote" type="text" placeholder="What was wrong? (optional)" />
+  </div>
   <div id="history"></div>
   <div id="recording">🎤 Recording — release the key to stop</div>
   <div id="loading">🤔 Thinking…</div>
@@ -109,10 +164,52 @@
   <script>
     const historyEl = document.getElementById('history');
     const inputEl = document.getElementById('input');
+    const feedbackUpEl = document.getElementById('feedbackUp');
+    const feedbackDownEl = document.getElementById('feedbackDown');
+    const feedbackNoteWrapEl = document.getElementById('feedbackNoteWrap');
+    const feedbackNoteEl = document.getElementById('feedbackNote');
     const recordingEl = document.getElementById('recording');
     const loadingEl = document.getElementById('loading');
     const RECORDING_DEFAULT_TEXT = recordingEl.textContent;
     inputEl.focus();
+
+    // Phase 2.1: feedback state, one value for the whole conversation (not
+    // per-turn) — 'thumbs_up' | 'thumbs_down' | null. Each change is sent
+    // to main immediately (main is the source of truth at close time, same
+    // shape as `turns` — see main.js/decisions.md), not batched for submit.
+    let feedbackState = null;
+
+    function sendFeedback() {
+      window.chatPanelAPI.setFeedback({
+        feedback: feedbackState,
+        // Only 👎 ever shows/uses the note field — a 👍 (or no feedback
+        // yet) always sends null, regardless of what might be left typed
+        // in a hidden field, so a note can never attach to the wrong verdict.
+        note: feedbackState === 'thumbs_down' ? (feedbackNoteEl.value.trim() || null) : null,
+      });
+    }
+
+    feedbackUpEl.addEventListener('click', () => {
+      feedbackState = 'thumbs_up';
+      feedbackUpEl.classList.add('active');
+      feedbackDownEl.classList.remove('active');
+      // Switching to 👍 hides and clears the note — "what was wrong?" no
+      // longer applies once the verdict is positive.
+      feedbackNoteWrapEl.classList.remove('visible');
+      feedbackNoteEl.value = '';
+      sendFeedback();
+    });
+
+    feedbackDownEl.addEventListener('click', () => {
+      feedbackState = 'thumbs_down';
+      feedbackDownEl.classList.add('active');
+      feedbackUpEl.classList.remove('active');
+      feedbackNoteWrapEl.classList.add('visible');
+      feedbackNoteEl.focus();
+      sendFeedback();
+    });
+
+    feedbackNoteEl.addEventListener('input', sendFeedback);
 
     // True while a model call is in flight — gates submission (one call at
     // a time; the input is also disabled below as the visible half of the

@@ -88,7 +88,7 @@ Everything today lives in one process on the user's machine except the single ou
   ```
 - **Conversation scope — ephemeral, session-only**: turns within one open panel share context (the model sees the full history so far, so follow-ups like "give me an example" work). Once the panel closes, that conversation is over — nothing is resumed or persisted for later browsing. The full turn history is logged once, at close, for the fine-tuning dataset (see §5) — but that's a one-way write, not a resumable chat log.
 - **Note on voice**: audio never leaves the device — consistent with "nothing leaves the device without the active query." Transcription is record-then-transcribe-on-release, not live word-by-word streaming (whisper.cpp doesn't naturally support that without real added complexity — not worth it for v1).
-- **Feedback buttons** (Phase 2.1): 👍/👎 in the title bar, persistent for the whole session, settable once per conversation. No schema change — `feedback` already exists on the per-conversation record (§5).
+- **Feedback buttons** (Phase 2.1, implemented 2026-08-24): 👍/👎 in the title bar, persistent for the whole session, settable once per conversation. The `feedback` field itself already existed on the per-conversation record (§5) — but a real schema change came with this step anyway: an optional free-text `feedback_note` ("what was wrong?"), revealed only when 👎 is clicked, never required. Motivation and the fine-tuning-goal tension it responds to are in decisions.md.
 - **Captured-region thumbnail** (Phase 2.6): a small thumbnail of the circled region, shown in the panel from the moment it opens. Passed once at panel creation as a data URL from the already-in-memory capture — no extra file read or IPC round-trip needed. Clicking it opens the full crop image in the system's default viewer via `shell.openPath` over IPC.
 - **Hold-to-talk mic level indicator** (Phase 2.6): a real-time level meter driven by RMS computed inline in the existing `ScriptProcessorNode` callback that already has the raw PCM buffer in hand — not a decorative loop animation independent of actual mic input.
 
@@ -110,7 +110,7 @@ Everything today lives in one process on the user's machine except the single ou
 ### 3.7 Local Logger
 - **Responsibility**: on session close, write the complete conversation (all turns) to local storage in the fine-tuning-ready schema
 - **Tech**: SQLite (e.g. `better-sqlite3`) or flat JSONL file
-- **Interface**: `logConversation(cropPath, contextPath, appHint, turns, feedback)`
+- **Interface**: `logConversation(cropPath, contextPath, appHint, turns, feedback, feedbackNote)`
 
 ### 3.8 Main App Window (Phase 2)
 - **Responsibility**: a persistent home for everything that isn't the ephemeral hotkey→overlay→chat flow — browsing past captures, changing settings, and a static help guide. Distinct lifecycle from the Overlay/Chat Panel: opened via the dock icon or app menu, not the hotkey, and — unlike the Chat Panel's fresh-window-per-session design (§3.4, decisions.md) — this window is meant to persist and be reopened/reused across the app's runtime, not recreated per interaction.
@@ -191,6 +191,7 @@ One record per **conversation** (not per turn) — a session can have multiple b
 | `turns` | array | ordered list of `{role: "user"\|"assistant", content: string}` |
 | `category` | enum | code / chart / ui / text / math / translation |
 | `feedback` | enum or null | thumbs_up / thumbs_down / none — captured once, for the conversation as a whole |
+| `feedback_note` | string or null | **New field, Phase 2.1 (2026-08-24).** Optional free-text captured only when `feedback` is thumbs_down ("what was wrong?"), never required to submit. Absent/null on every pre-2.1 record and on any thumbs_up/no-feedback conversation |
 | `source` | enum | real_usage / synthetic |
 | `started_at` / `ended_at` | datetime | session bounds |
 

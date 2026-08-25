@@ -73,6 +73,7 @@ One record per **conversation**, not per question — a session can have several
   ],
   "category": "code",
   "feedback": "thumbs_up",
+  "feedback_note": null,
   "source": "real_usage",
   "started_at": "2026-08-08T10:00:00Z",
   "ended_at": "2026-08-08T10:00:12Z"
@@ -81,8 +82,10 @@ One record per **conversation**, not per question — a session can have several
 This is written locally (JSONL, one line per conversation — see `.claude/memory/decisions.md` for why JSONL over SQLite) once the chat panel closes, after every turn's Mistral call has already happened — not at capture time, since the conversation isn't complete until the panel closes.
 
 ### 3–4. Label, Filter, Clean
-- 👍 examples: usable as-is for training
-- 👎 examples: don't discard by default — hand-edit the answer into something correct, since the *question + image* pairing is still valuable, only the answer was bad
+Fine-tuning is training for two things now, not one — image-reading **accuracy** and response **quality** (helpfulness, concision, tone). The two goals are in real tension with Phase 5's existing "not conversational flair" eval stance (a terse-but-correct answer is still meant to beat a fluent-but-wrong one) — named explicitly here rather than silently blended in; see `.claude/memory/decisions.md`. In practice that means this hand-review pass edits for *both* now:
+
+- 👍 examples: usable as-is for factual correctness, but **still worth a quality pass** — a correct answer can still be verbose, oddly toned, or unhelpfully terse, and it's captured as good data (positive label) either way if left unedited, so this is the only place quality issues in an already-correct answer get caught
+- 👎 examples: don't discard by default — hand-edit the answer into something both correct *and* well-written, since the *question + image* pairing is still valuable, only the answer was bad. If `feedback_note` (Phase 2.1) is set, read it first — it's the user's own word on what was actually wrong, a cheaper starting point than re-diagnosing from scratch
 - Cleaning pass: drop near-duplicate crops, corrupted images, empty/refused answers
 
 This is the stage most worth doing manually early on — a few hundred *hand-reviewed* examples beat a few thousand unreviewed ones for a first fine-tune.

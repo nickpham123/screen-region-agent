@@ -49,4 +49,11 @@ contextBridge.exposeInMainWorld('chatPanelAPI', {
   // Routes renderer-side logging to the main process terminal, same as
   // overlayAPI.debugLog.
   debugLog: (msg) => ipcRenderer.send('debug-log', msg),
+  // Phase 2.1: sends the current feedback state ({feedback, note}) to
+  // main, which just stores the latest value in its per-session closure —
+  // same "renderer sends, main is the source of truth at close" shape as
+  // submitTurn above. Sent on every change (button click, note keystroke),
+  // not just once, so whatever's in main's closure at close time is always
+  // current regardless of how the panel actually closes.
+  setFeedback: (payload) => ipcRenderer.send('chat-feedback-set', payload),
 });

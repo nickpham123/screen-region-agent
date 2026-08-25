@@ -23,6 +23,7 @@ One record per **conversation**, not per question — a session can have several
   ],
   "category": "code | chart | ui | text | math | translation",
   "feedback": "thumbs_up | thumbs_down | null",
+  "feedback_note": "string | null (Phase 2.1 — optional free-text set only alongside thumbs_down)",
   "source": "real_usage | synthetic",
   "started_at": "ISO datetime",
   "ended_at": "ISO datetime"
@@ -33,9 +34,11 @@ Every logging call, real or synthetic, writes this exact shape. Don't invent per
 
 ## Workflow: cleaning real usage data
 
+Two goals now, not one: image-reading **accuracy** and response **quality** (helpfulness, concision, tone) — in real tension with the "not conversational flair" eval stance below, named explicitly rather than blended in silently (see `.claude/memory/decisions.md`).
+
 1. Pull all logged interactions
-2. 👍 examples → usable as-is
-3. 👎 examples → don't discard by default. Hand-edit the `answer` field into something correct — the image+question pairing is still valuable even when the original answer wasn't
+2. 👍 examples → usable as-is for correctness, but still worth a quality pass — a correct answer can still be verbose or badly toned, and this hand-review pass is the only place that gets caught before it becomes training data
+3. 👎 examples → don't discard by default. Hand-edit the `answer` field into something both correct *and* well-written — the image+question pairing is still valuable even when the original answer wasn't. If `feedback_note` is set, read it first — it's the user's own account of what was wrong
 4. Drop: near-duplicate crops, corrupted images, empty/refused answers
 
 ## Workflow: generating synthetic examples
