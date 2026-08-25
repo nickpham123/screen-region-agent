@@ -85,6 +85,11 @@ function showOrCreateMainWindow() {
   if (mainWindow) {
     mainWindow.show();
     mainWindow.focus();
+    // TEMPORARY [dock-diag] (re-added 2026-08-25, 2nd real occurrence of
+    // the Phase 2.2 dock-visibility anomaly — decisions.md's own revisit
+    // trigger for this). Remove once this anomaly's cause is confirmed or
+    // it goes unreproduced again on a fully-instrumented rerun.
+    if (app.dock) log('[dock-diag] window reuse, dock visible:', app.dock.isVisible());
     return;
   }
 
@@ -97,6 +102,7 @@ function showOrCreateMainWindow() {
       preload: path.join(__dirname, 'src/mainWindow/mainWindowPreload.js'),
     },
   });
+  if (app.dock) log('[dock-diag] window created, dock visible:', app.dock.isVisible());
 
   mainWindow.loadFile(path.join(__dirname, 'src/mainWindow/mainWindow.html'));
 
@@ -105,7 +111,9 @@ function showOrCreateMainWindow() {
   mainWindow.on('close', (event) => {
     if (isQuitting) return;
     event.preventDefault();
+    if (app.dock) log('[dock-diag] close intercepted, dock visible BEFORE hide():', app.dock.isVisible());
     mainWindow.hide();
+    if (app.dock) log('[dock-diag] close intercepted, dock visible AFTER hide():', app.dock.isVisible());
   });
 
   mainWindow.on('closed', () => {
@@ -294,6 +302,8 @@ function createChatPanelWindow(cropPath, fullPath, displayId) {
   // reliably win real OS focus-steal on macOS when the app isn't already
   // frontmost.
   app.focus({ steal: true });
+  // TEMPORARY [dock-diag] — see showOrCreateMainWindow()'s comment.
+  if (app.dock) log('[dock-diag] chat panel app.focus(steal), dock visible:', app.dock.isVisible());
   chatPanelWindow.focus();
 
   // Turns accumulate here as the panel's real UI sends them, via
@@ -690,6 +700,8 @@ function activateGestureOverlay(triggerKeyCode) {
   // called from a global-shortcut callback (the app wasn't already
   // frontmost) — force it, then focus the window itself.
   app.focus({ steal: true });
+  // TEMPORARY [dock-diag] — see showOrCreateMainWindow()'s comment.
+  if (app.dock) log('[dock-diag] overlay app.focus(steal), dock visible:', app.dock.isVisible());
   overlayWindow.focus();
 
   seenTriggerKey = false;
