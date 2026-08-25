@@ -811,7 +811,15 @@ function registerHotkey() {
         globalShortcut.unregisterAll();
         holdToTalkActive = true;
         seenHoldToTalkKey = false;
-        chatPanelWindow.webContents.send('hold-to-talk-start');
+        // Real hands-on Phase 2.3 testing (2026-08-25) found this never
+        // carried triggerKeyCode — chatPanel.html had it hardcoded to
+        // 'Digit1' from before the hotkey was changeable, so switching the
+        // production accelerator (e.g. to Control+2/Digit2) silently broke
+        // hold-to-talk entirely: recording started, but neither the
+        // liveness pings nor the real keyup ever matched, so every attempt
+        // got discarded by the watchdog regardless of what was said. Same
+        // fix pattern the Overlay's 'activate' payload already uses.
+        chatPanelWindow.webContents.send('hold-to-talk-start', triggerKeyCode);
         armHoldToTalkWatchdog();
         return;
       }

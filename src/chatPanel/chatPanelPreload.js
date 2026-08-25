@@ -29,11 +29,15 @@ contextBridge.exposeInMainWorld('chatPanelAPI', {
   // fresh keydown, and here specifically, Digit1's original keydown is
   // consumed by the accelerator before this signal is even sent (see
   // decisions.md's 2026-08-23 chord-timing findings).
-  onHoldToTalkStart: (callback) => ipcRenderer.on('hold-to-talk-start', () => callback()),
+  // Carries the current trigger key's code (e.g. 'Digit2') — added
+  // 2026-08-25 alongside the Settings hotkey-change feature; the renderer
+  // used to hardcode 'Digit1', which silently broke hold-to-talk the moment
+  // the production accelerator was ever changed (see decisions.md).
+  onHoldToTalkStart: (callback) => ipcRenderer.on('hold-to-talk-start', (event, triggerKeyCode) => callback(triggerKeyCode)),
   // Main force-ended a stuck hold-to-talk session (liveness watchdog
   // fired) — mirrors the overlay's 'cancel-gesture'.
   onHoldToTalkCancel: (callback) => ipcRenderer.on('hold-to-talk-cancel', () => callback()),
-  // The renderer's real Digit1 keyup is the only trusted end-of-hold
+  // The renderer's real trigger-key keyup is the only trusted end-of-hold
   // signal — never a timeout (see decisions.md). audioPayload is
   // { samples: ArrayBuffer, sampleRate } (raw Float32 data, no processing
   // done on this side — see main.js) or null if nothing was captured.

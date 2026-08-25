@@ -357,6 +357,13 @@
     }
 
     let holding = false;
+    // Which key's keyup ends the hold — supplied by main on each
+    // 'hold-to-talk-start' rather than hardcoded, so a changed Settings
+    // hotkey (e.g. Control+2/Digit2) is honored instead of silently
+    // matching nothing. Same pattern overlay.js already uses for its own
+    // triggerKeyCode, added here 2026-08-25 after this was found broken by
+    // real hands-on testing — see decisions.md.
+    let triggerKeyCode = null;
 
     // Audio-graph state for the current hold, torn down by stopRecording()
     // regardless of how the hold ends (real keyup or watchdog cancel).
@@ -400,7 +407,8 @@
       return { samples: merged, sampleRate: actualSampleRate };
     }
 
-    window.chatPanelAPI.onHoldToTalkStart(async () => {
+    window.chatPanelAPI.onHoldToTalkStart(async (currentTriggerKeyCode) => {
+      triggerKeyCode = currentTriggerKeyCode;
       holding = true;
       recordingEl.textContent = RECORDING_DEFAULT_TEXT;
       recordingEl.classList.add('active');
@@ -488,7 +496,7 @@
     });
 
     window.addEventListener('keydown', (e) => {
-      if (e.code !== 'Digit1' || !holding) return;
+      if (e.code !== triggerKeyCode || !holding) return;
       // Every keydown re-arms the main-process watchdog, same as the
       // overlay's gestureAlive — not gated on e.repeat, since the first one
       // this listener ever sees for a given hold is already a repeat (the
@@ -497,7 +505,7 @@
     });
 
     window.addEventListener('keyup', (e) => {
-      if (e.code !== 'Digit1' || !holding) return;
+      if (e.code !== triggerKeyCode || !holding) return;
       holding = false;
       recordingEl.classList.remove('active');
       window.chatPanelAPI.debugLog('[hold-to-talk] ended by real keyup');
