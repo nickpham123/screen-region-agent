@@ -719,6 +719,15 @@ function startHotkeyTest(accelerator, triggerKeyCode, sender) {
 
   globalShortcut.unregisterAll();
   const registered = globalShortcut.register(accelerator, () => {
+    // Log immediately, first thing — same pattern registerHotkey()'s own
+    // callback uses, and for the same reason: this is the hotkey/gesture-
+    // activation path, the single most bug-prone area in this project's
+    // history (decisions.md's whole consolidated hold/release section).
+    // Originally missing here, which cost real diagnostic time tracing a
+    // real accidental activation with no log line identifying it — added
+    // 2026-08-25 specifically because that gap was directly blocking a real
+    // investigation, not as a speculative nice-to-have.
+    log(`[hotkey-test] Candidate [${accelerator}] fired — waiting on keyup of ${triggerKeyCode}`);
     // Same unregister production's own callback does (registerHotkey()) —
     // missing here in the first version of this function, which is exactly
     // the bug decisions.md's "the accelerator must be unregistered during
@@ -751,6 +760,10 @@ function rearmHotkeyTest() {
   const { accelerator, triggerKeyCode } = hotkeyTestMode;
   globalShortcut.unregisterAll();
   const registered = globalShortcut.register(accelerator, () => {
+    // Same logging + fix as startHotkeyTest() above, same reason — this
+    // path re-arms the identical candidate and needs the identical
+    // immediate log line + unregister-on-fire.
+    log(`[hotkey-test] Candidate [${accelerator}] fired (re-armed after too-small) — waiting on keyup of ${triggerKeyCode}`);
     globalShortcut.unregisterAll();
     setTimeout(() => activateGestureOverlay(triggerKeyCode), UNREGISTER_SETTLE_MS);
   });
@@ -938,8 +951,13 @@ ipcMain.on('settings-set-dictation-language', (event, dictationLanguage) => {
 });
 
 // Hotkey test flow (Phase 2.3, decisions.md — reuses the real gesture
-// machinery, see startHotkeyTest()/rearmHotkeyTest() above).
+// machinery, see startHotkeyTest()/rearmHotkeyTest() above). Each handler
+// logs immediately, first thing, same as the rest of this file's
+// hotkey/gesture-activation path — added 2026-08-25 alongside the two log
+// lines above, for the same reason (see the comment on startHotkeyTest()'s
+// registered callback).
 ipcMain.on('hotkey-test-start', (event, { accelerator, triggerKeyCode }) => {
+  log(`[hotkey-test] Start requested: candidate [${accelerator}] (${triggerKeyCode})`);
   startHotkeyTest(accelerator, triggerKeyCode, event.sender);
 });
 
@@ -947,7 +965,11 @@ ipcMain.on('hotkey-test-start', (event, { accelerator, triggerKeyCode }) => {
 // the gesture) — not just the watchdog's own timeout path. Safe to call
 // unconditionally; a no-op if no test is running.
 ipcMain.on('hotkey-test-cancel', () => {
-  if (!hotkeyTestMode) return;
+  if (!hotkeyTestMode) {
+    log('[hotkey-test] Cancel requested, but no test was running — no-op.');
+    return;
+  }
+  log(`[hotkey-test] Cancelled: candidate [${hotkeyTestMode.accelerator}] — reverting to production.`);
   clearStuckGestureTimer();
   overlayWindow.webContents.send('cancel-gesture');
   overlayWindow.hide();
@@ -959,6 +981,7 @@ ipcMain.on('hotkey-test-cancel', () => {
 // control on that. Persists the tested candidate as the production
 // accelerator and re-registers it immediately.
 ipcMain.on('hotkey-save', (event, { accelerator, triggerKeyCode }) => {
+  log(`[hotkey-test] Save requested: [${accelerator}] (${triggerKeyCode}) becomes the production hotkey.`);
   ACCELERATOR_CANDIDATES[0] = { accelerator, triggerKeyCode };
   appSettings = saveSettings({ hotkeyAccelerator: accelerator, hotkeyTriggerKeyCode: triggerKeyCode });
   registerHotkey();
