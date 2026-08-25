@@ -35,6 +35,66 @@ let holdToTalkActive = false;
 // moved off that display mid-drag — see decisions.md.
 let activeDisplayId = null;
 
+// Phase 2.2: the Main App Window (Captures/Settings/Help). Unlike the Chat
+// Panel, this window is meant to persist and be reopened/reused across the
+// app's runtime, not recreated per interaction (system_design_plan.md §3.8)
+// — closer to the Overlay's reuse pattern than the Chat Panel's fresh-
+// window-per-session one. null whenever it hasn't been created yet (lazy —
+// this app is hotkey-first and shouldn't put a window in front of the user
+// just for launching).
+let mainWindow = null;
+
+// True only during real app shutdown (app.quit()/Cmd+Q), set via
+// 'before-quit'. Needed because showOrCreateMainWindow() intercepts the
+// window's own 'close' to hide instead of destroy (see below) — without
+// this guard, that same interception would also swallow a real quit,
+// since Electron fires 'close' on every window it's about to shut down
+// too, and preventDefault() there would just hide the window forever
+// instead of letting the app exit.
+let isQuitting = false;
+app.on('before-quit', () => {
+  isQuitting = true;
+});
+
+// Idempotent single entry point for both "open it for the first time" and
+// "reopen it" — used by app.on('activate') below and reserved for a future
+// menu item (deferred for 2.2, see decisions.md/todo.md). Deliberately not
+// branching on BrowserWindow.getAllWindows().length: this app already has
+// Overlay/Chat Panel windows coming and going, so a raw window-count check
+// could misfire in ways specific to this app's multi-window shape — this
+// only ever looks at its own `mainWindow` reference.
+function showOrCreateMainWindow() {
+  if (mainWindow) {
+    mainWindow.show();
+    mainWindow.focus();
+    return;
+  }
+
+  mainWindow = new BrowserWindow({
+    width: 720,
+    height: 480,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      preload: path.join(__dirname, 'src/mainWindow/mainWindowPreload.js'),
+    },
+  });
+
+  mainWindow.loadFile(path.join(__dirname, 'src/mainWindow/mainWindow.html'));
+
+  // Hide, don't destroy — reopening should be instant, no reload. Only
+  // lets the real close happen during actual app shutdown (isQuitting).
+  mainWindow.on('close', (event) => {
+    if (isQuitting) return;
+    event.preventDefault();
+    mainWindow.hide();
+  });
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+}
+
 // Initial bounds only — the overlay is repositioned to the cursor's display
 // on every activation (see registerHotkey). The primary display is just a
 // sensible starting position for a window that is never shown until then.
@@ -715,10 +775,26 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(() => {
+    // Phase 2.2: without this, the app's Dock activation policy stays
+    // "background only" on this Electron install/environment — confirmed
+    // directly via a throwaway diagnostic (osascript's "background only"
+    // flipped from true to false only after calling this), not assumed
+    // from docs. Nothing before Phase 2.2 needed a Dock icon: every real
+    // gesture used the global hotkey + app.focus({steal:true}), which
+    // works regardless of Dock-icon presence. This is the first feature
+    // that actually depends on the icon existing for 'activate' to fire.
+    if (app.dock) app.dock.show();
     createOverlayWindow();
     captureRegion = createCaptureRegion(overlayWindow);
     registerHotkey();
   });
+
+  // Registered inside the single-instance-lock gate, consistent with the
+  // rest of startup — a blocked second instance quits right after this
+  // point anyway, so there's no real window for 'activate' to meaningfully
+  // fire before that quit completes, but keeping every real setup call
+  // gated the same way is one less thing to reason about.
+  app.on('activate', showOrCreateMainWindow);
 }
 
 ipcMain.on('debug-log', (event, msg) => log('[renderer]', msg));

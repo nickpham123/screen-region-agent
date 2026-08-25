@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Screen-Region Agent</title>
+  <style>
+    body {
+      margin: 0;
+      display: flex;
+      height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #1e1e1e;
+      color: #e8e8e8;
+    }
+    #sidebar {
+      width: 160px;
+      flex-shrink: 0;
+      border-right: 1px solid #333;
+      padding: 12px 0;
+      box-sizing: border-box;
+    }
+    #sidebar button {
+      display: block;
+      width: 100%;
+      text-align: left;
+      background: none;
+      border: none;
+      color: #ccc;
+      padding: 8px 16px;
+      font-size: 13px;
+      font-family: inherit;
+      cursor: pointer;
+    }
+    #sidebar button:hover {
+      background: #2a2a2a;
+    }
+    #sidebar button.active {
+      background: #333;
+      color: white;
+    }
+    #content {
+      flex: 1;
+      padding: 24px;
+      overflow-y: auto;
+    }
+    .view {
+      display: none;
+    }
+    .view.active {
+      display: block;
+    }
+    .view h1 {
+      font-size: 16px;
+      font-weight: 600;
+      margin: 0 0 8px;
+    }
+    .view p {
+      font-size: 13px;
+      color: #999;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <div id="sidebar">
+    <button id="navCaptures" class="active" data-view="captures">Captures</button>
+    <button id="navSettings" data-view="settings">Settings</button>
+    <button id="navHelp" data-view="help">Help</button>
+  </div>
+  <div id="content">
+    <!--
+      Phase 2.2 is shell + navigation only — each view below is a placeholder
+      stub. Real content (the reverse-chronological conversations.jsonl list,
+      the actual Settings controls, the static usage guide) is 2.4/2.3/2.5's
+      job respectively, not this step's — see implementation_plan.md.
+    -->
+    <div id="viewCaptures" class="view active">
+      <h1>Captures</h1>
+      <p>Coming in Phase 2.4 — a reverse-chronological list of logged conversations.</p>
+    </div>
+    <div id="viewSettings" class="view">
+      <h1>Settings</h1>
+      <p>Coming in Phase 2.3 — hotkey, display name, theme, dictation language, data and privacy.</p>
+    </div>
+    <div id="viewHelp" class="view">
+      <h1>Help</h1>
+      <p>Coming in Phase 2.5 — a static in-app usage guide.</p>
+    </div>
+  </div>
+
+  <script>
+    // Plain client-side view switching — no separate windows, no framework,
+    // matches every other window in this app (system_design_plan.md §3.8).
+    const navButtons = document.querySelectorAll('#sidebar button');
+    const views = document.querySelectorAll('.view');
+
+    navButtons.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        navButtons.forEach((b) => b.classList.remove('active'));
+        views.forEach((v) => v.classList.remove('active'));
+        btn.classList.add('active');
+        document.getElementById('view' + btn.dataset.view[0].toUpperCase() + btn.dataset.view.slice(1)).classList.add('active');
+      });
+    });
+  </script>
+</body>
+</html>
