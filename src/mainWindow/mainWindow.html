@@ -389,7 +389,19 @@
         showHotkeyStatus('Option/Alt can’t be used — macOS intercepts it before this app ever sees the key. Try a different modifier.', 'error');
         return; // stay in recording mode, let them try again
       }
-      if (!e.ctrlKey && !e.shiftKey && !e.metaKey) {
+      if (e.metaKey) {
+        // Added 2026-08-25 after two real hands-on hotkey tests (Command+3,
+        // Command+7 — different keys, same modifier) both fired normally on
+        // press but never delivered a release, timing out the same way
+        // Option does. Weaker evidentiary bar than Option's block above
+        // (n=2, not five separately-tested combos plus an understood,
+        // chord-independent mechanism — see decisions.md for the honest
+        // accounting), but a real repeated pattern, not a one-off. Revisit
+        // if a Command combo is ever found to pass the live test cleanly.
+        showHotkeyStatus('Command can’t be used — two different Command combos both failed to release properly in testing. Try a different modifier.', 'error');
+        return; // stay in recording mode, let them try again
+      }
+      if (!e.ctrlKey && !e.shiftKey) {
         showHotkeyStatus('Needs at least one modifier key, like Control.', 'error');
         return;
       }
@@ -401,7 +413,6 @@
       const modifiers = [];
       if (e.ctrlKey) modifiers.push('Control');
       if (e.shiftKey) modifiers.push('Shift');
-      if (e.metaKey) modifiers.push('Command');
       const accelerator = modifiers.join('+') + '+' + key;
 
       stopRecording();
