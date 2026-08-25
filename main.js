@@ -719,6 +719,15 @@ function startHotkeyTest(accelerator, triggerKeyCode, sender) {
 
   globalShortcut.unregisterAll();
   const registered = globalShortcut.register(accelerator, () => {
+    // Same unregister production's own callback does (registerHotkey()) —
+    // missing here in the first version of this function, which is exactly
+    // the bug decisions.md's "the accelerator must be unregistered during
+    // the gesture" row warns about: without it, the still-registered
+    // candidate claims the trigger key's keyup exclusively, so the overlay
+    // never sees the real release and hangs until the watchdog times out.
+    // Confirmed via a real hands-on test (trail drew fine, release never
+    // finalized, timed out at the 5s silence deadline) — see decisions.md.
+    globalShortcut.unregisterAll();
     setTimeout(() => activateGestureOverlay(triggerKeyCode), UNREGISTER_SETTLE_MS);
   });
 
@@ -742,6 +751,7 @@ function rearmHotkeyTest() {
   const { accelerator, triggerKeyCode } = hotkeyTestMode;
   globalShortcut.unregisterAll();
   const registered = globalShortcut.register(accelerator, () => {
+    globalShortcut.unregisterAll();
     setTimeout(() => activateGestureOverlay(triggerKeyCode), UNREGISTER_SETTLE_MS);
   });
   if (!registered) {
