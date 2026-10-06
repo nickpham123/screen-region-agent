@@ -28,11 +28,13 @@ are (that file's rule: never delete rows). New errors go here.
 ---
 
 ### E-013 — "Couldn't reach the model — check your connection." on turn 3 of a long chat
-- Status: open
+- Status: watching (fix verified in the repro and mocked checks; the user's real hotkey run is pending)
 - First seen: 2026-10-05, fix-mistral-429, on `ministral-14b-2512` (after 88bf7c6)
 - Symptom: real 3-turn chat ("How do I make a similar UI like the screenshot?" → "How should I get started" → "What if I have programming experience, help me learn slowly step by step"). Answers 1–2 were very long generic tutorials. Turn 3 showed "Couldn't reach the model — check your connection." Clicking Retry showed "Retrying…" and the same error came back.
 - Cause: confirmed in the repro: our own 30s `REQUEST_TIMEOUT_MS` abort, classified as `network`. Long answers take longer than 30s to generate (~90–100 completion tokens/s, so ~2,700+ tokens hits the limit), and the abort lands in the same catch branch as a real connection failure. Retry re-sends the identical request, which can time out again. unconfirmed: that the user's in-app failure was this. The app's terminal log of that failure wasn't seen, but the symptom (fail, then Retry fails) matches repro rep 3 exactly.
-- Fix: none yet
+- Fix: two parts. The timeout value (30s) is unchanged.
+  - e121973: a teaching-style `SYSTEM_PROMPT` plus `max_tokens: 1024` in visionClient.js, so answers are short and generation stays far below 30s (decisions.md response-style row).
+  - 740d3fe: our own timeout now throws `timeout`, shown as "The model took too long to answer — try again or ask for a shorter answer." Retry stays available. Real connection errors stay `network`.
 - Avoid: don't map every fetch rejection to "check your connection". Our own timeout is a different failure with a different remedy. 1bd8f67 logs `timedOut` on every fetch failure, so the log can tell them apart.
 - Evidence: 1bd8f67, `node diagnostics/repro_long_conversation.js <2992x1934 whole-screen.png> <scratch.json>`, 3 repeats, no system prompt, 2026-10-06T04:09–04:15Z. Answers in session scratch only (screen content).
   ```
@@ -47,6 +49,9 @@ are (that file's rule: never delete rows). New errors go here.
   rep 3 turn 3: FAIL [network] 30019ms  cause=AbortError   -> retry FAIL [network] 30021ms
   ```
   Every failure logged `[vision-diag] fetch failed: {"elapsedMs":~30015,"name":"AbortError","causeCode":null,"timedOut":true,"externalAbort":false}`. No non-2xx and no connection-level errors (no ECONNRESET/ENOTFOUND) in 13 calls.
+  - Before e121973, 491ccc1 `--depth-turn --repeats 1`, 2026-10-06T04:21Z: turn 1 13.6s / 1482 tokens, turn 2 25.6s / 2703, turn 3 failed at 30.0s and again on Retry (`timedOut:true`), turn 4 never sent.
+  - After e121973, same capture and flags (completion tokens; elapsed; all `finish_reason: stop`, none `length`): run 1 146 / 405 / 533 / 225 tokens, 3.4 / 4.6 / 5.6 / 3.6s. Extra runs: 74 / 90 / 130 / 176 and 78 / 63 / 82 / 93, all 1.6–3.0s.
+  - 740d3fe, mocked fetch through the real handleUserTurn(): hung request -> `timeout` message after 30003ms, retryable; ENOTFOUND -> `network` message, retryable; external cancel -> no error shown, turns untouched. Checked the IPC payload only; the panel's DOM rendering of the new message was not checked (it renders any message generically).
 
 ---
 
