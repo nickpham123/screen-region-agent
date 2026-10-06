@@ -23,7 +23,9 @@ const path = require('path');
 // loading step. .env is gitignored, never committed.
 require('dotenv').config();
 
-const MODEL_ID = 'mistral-small-latest';
+// Pinned, not a -latest alias: a stopgap until the Phase 4 fine-tune.
+// mistral-small has no quota on this key — see decisions.md, errors.md E-001.
+const MODEL_ID = 'ministral-14b-2512';
 const CHAT_COMPLETIONS_URL = 'https://api.mistral.ai/v1/chat/completions';
 
 // No prior network-call precedent in this codebase to match, so picked
