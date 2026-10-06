@@ -95,6 +95,8 @@ Concrete next actions, not aspirational plans (those live in `implementation_pla
 
 ## Open questions blocking later phases
 
+- [ ] **Vision calls are blocked: `mistral-small` has a request limit of 0 on this key** — see errors.md E-001. Pending: account-side fix vs. a MODEL_ID change (which would supersede decisions.md row 1)
+
 - [ ] Whether `image_context` (full screenshot) is always sent alongside the crop, or only conditionally — now relevant per-turn, not just once per session
 - [ ] ~~Which whisper.cpp model size to bundle~~ — **folded into "Next — Phase 2" item 2.3's Dictation language sub-item (2026-08-24)**, since Settings' dictation-language control reopens exactly this tradeoff. How the model file gets distributed with the packaged app is still separately tracked under the blocking pre-packaging checklist item below.
 - [x] ~~Blocking voice input: `whisper-node-addon` broken.~~ **Resolved 2026-08-23 — switched to `nodejs-whisper`.** Evaluated per the user's ask (re-verifying on-device + Metal, not assumed): both confirmed empirically via a real build + real transcription (`diagnostics/verify_nodejswhisper.js`) — Metal genuinely engaged at runtime (`ggml_metal_device_init: GPU name: MTL0 (Apple M1 Pro)`), zero network beyond the one-time model download, accurate transcript, ~775ms inference. `whisper-node-addon` uninstalled (also cleared the `npm audit` critical finding to zero). Full evidence in decisions.md. **Next: wire it into the app** — see the new item below.

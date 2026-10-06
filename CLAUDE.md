@@ -86,6 +86,7 @@ A desktop tool: hold a hotkey, circle a region of the screen with the cursor, th
 | Location | What it covers |
 |---|---|
 | `.claude/memory/decisions.md` | Locked-in decisions and why — check before proposing alternatives |
+| `.claude/memory/errors.md` | Every error/bug observed, its cause (confirmed vs. unconfirmed) and fix — the only place these are logged |
 | `.claude/memory/project_state.md` | What's actually built vs. planned, read for current reality |
 | `.claude/memory/phase_log.md` | Status of each implementation phase |
 | `.claude/memory/todo.md` | Concrete next actions |
@@ -113,3 +114,4 @@ Update the memory files as you go, not just once at the end — a session can en
 - The moment something gets decided (not just discussed) — a tradeoff resolved, an approach chosen over an alternative — add a row to `decisions.md` immediately
 - Update `project_state.md`'s "Built and working" / "Planned but not built" lists whenever something moves from one to the other
 - Add a dated entry to `phase_log.md`'s Log section whenever a phase's status column changes
+- Errors, bugs and their fixes go ONLY in `errors.md` — log one when it's observed, not when it's fixed. `decisions.md`, `project_state.md`, `phase_log.md` and `todo.md` get at most a one-line pointer (e.g. "see errors.md E-012"). Existing `decisions.md` rows about past bugs stay as they are
