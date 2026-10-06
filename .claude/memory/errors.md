@@ -27,6 +27,29 @@ are (that file's rule: never delete rows). New errors go here.
 
 ---
 
+### E-013 — "Couldn't reach the model — check your connection." on turn 3 of a long chat
+- Status: open
+- First seen: 2026-10-05, fix-mistral-429, on `ministral-14b-2512` (after 88bf7c6)
+- Symptom: real 3-turn chat ("How do I make a similar UI like the screenshot?" → "How should I get started" → "What if I have programming experience, help me learn slowly step by step"). Answers 1–2 were very long generic tutorials. Turn 3 showed "Couldn't reach the model — check your connection." Clicking Retry showed "Retrying…" and the same error came back.
+- Cause: confirmed in the repro: our own 30s `REQUEST_TIMEOUT_MS` abort, classified as `network`. Long answers take longer than 30s to generate (~90–100 completion tokens/s, so ~2,700+ tokens hits the limit), and the abort lands in the same catch branch as a real connection failure. Retry re-sends the identical request, which can time out again. unconfirmed: that the user's in-app failure was this. The app's terminal log of that failure wasn't seen, but the symptom (fail, then Retry fails) matches repro rep 3 exactly.
+- Fix: none yet
+- Avoid: don't map every fetch rejection to "check your connection". Our own timeout is a different failure with a different remedy. 1bd8f67 logs `timedOut` on every fetch failure, so the log can tell them apart.
+- Evidence: 1bd8f67, `node diagnostics/repro_long_conversation.js <2992x1934 whole-screen.png> <scratch.json>`, 3 repeats, no system prompt, 2026-10-06T04:09–04:15Z. Answers in session scratch only (screen content).
+  ```
+  rep 1 turn 1: OK  11817ms  completion_tokens=1170  prompt_tokens=2030  finish_reason=stop
+  rep 1 turn 2: OK  23331ms  completion_tokens=2371  prompt_tokens=3207  finish_reason=stop
+  rep 1 turn 3: FAIL [network] 30026ms  cause=AbortError   -> retry OK 26625ms, 2402 tokens
+  rep 2 turn 1: OK  17042ms  completion_tokens=1588
+  rep 2 turn 2: FAIL [network] 30012ms  cause=AbortError   -> retry OK 26920ms, 2690 tokens
+  rep 2 turn 3: OK  27384ms  completion_tokens=2887  prompt_tokens=6331
+  rep 3 turn 1: OK  12651ms  completion_tokens=1322
+  rep 3 turn 2: OK  20597ms  completion_tokens=2056
+  rep 3 turn 3: FAIL [network] 30019ms  cause=AbortError   -> retry FAIL [network] 30021ms
+  ```
+  Every failure logged `[vision-diag] fetch failed: {"elapsedMs":~30015,"name":"AbortError","causeCode":null,"timedOut":true,"externalAbort":false}`. No non-2xx and no connection-level errors (no ECONNRESET/ENOTFOUND) in 13 calls.
+
+---
+
 ### E-012 — Vision models invent text for covered or cut-off screen text
 - Status: watching
 - First seen: 2026-10-06, fix-mistral-429, during the E-001 model comparison
