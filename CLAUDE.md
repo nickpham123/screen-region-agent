@@ -2,6 +2,10 @@
 
 Entry point for any Claude session (chat or Claude Code) working in this repo. Read this first, then `.claude/memory/project_state.md` for current state, then the specific doc you need.
 
+## Product intent
+
+This app is a **screen region learning assistant**: the user selects part of their screen to understand or learn from it. Responses teach in short form first and go deeper only on follow-up questions, so token use stays low. This is enforced by `SYSTEM_PROMPT` in `src/shared/visionClient.js`. Change the style there, not by adding turns to the conversation history.
+
 ---
 
 ## Part 1: Behavioral guidelines
