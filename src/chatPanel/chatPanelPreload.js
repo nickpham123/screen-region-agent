@@ -17,8 +17,9 @@ contextBridge.exposeInMainWorld('chatPanelAPI', {
   onAssistantReply: (callback) => ipcRenderer.on('chat-assistant-reply', (event, turn) => callback(turn)),
   // A §7-mapped, user-safe error message (network/rate-limit/malformed/
   // other) — never a raw error object, since the Response Handler already
-  // did that translation.
-  onChatError: (callback) => ipcRenderer.on('chat-error', (event, message) => callback(message)),
+  // did that translation. `retryable` is false for a permanent failure
+  // (quota_zero), so the renderer knows not to offer Retry.
+  onChatError: (callback) => ipcRenderer.on('chat-error', (event, message, retryable) => callback(message, retryable)),
   // Re-attempts the last (still-unanswered) user turn after an error, per
   // §7's "retry button" — no new turn to send, main already has it.
   retryLastTurn: () => ipcRenderer.send('chat-retry'),
@@ -29,11 +30,15 @@ contextBridge.exposeInMainWorld('chatPanelAPI', {
   // fresh keydown, and here specifically, Digit1's original keydown is
   // consumed by the accelerator before this signal is even sent (see
   // decisions.md's 2026-08-23 chord-timing findings).
-  onHoldToTalkStart: (callback) => ipcRenderer.on('hold-to-talk-start', () => callback()),
+  // Carries the current trigger key's code (e.g. 'Digit2') — added
+  // 2026-08-25 alongside the Settings hotkey-change feature; the renderer
+  // used to hardcode 'Digit1', which silently broke hold-to-talk the moment
+  // the production accelerator was ever changed (see decisions.md).
+  onHoldToTalkStart: (callback) => ipcRenderer.on('hold-to-talk-start', (event, triggerKeyCode) => callback(triggerKeyCode)),
   // Main force-ended a stuck hold-to-talk session (liveness watchdog
   // fired) — mirrors the overlay's 'cancel-gesture'.
   onHoldToTalkCancel: (callback) => ipcRenderer.on('hold-to-talk-cancel', () => callback()),
-  // The renderer's real Digit1 keyup is the only trusted end-of-hold
+  // The renderer's real trigger-key keyup is the only trusted end-of-hold
   // signal — never a timeout (see decisions.md). audioPayload is
   // { samples: ArrayBuffer, sampleRate } (raw Float32 data, no processing
   // done on this side — see main.js) or null if nothing was captured.
@@ -49,4 +54,11 @@ contextBridge.exposeInMainWorld('chatPanelAPI', {
   // Routes renderer-side logging to the main process terminal, same as
   // overlayAPI.debugLog.
   debugLog: (msg) => ipcRenderer.send('debug-log', msg),
+  // Phase 2.1: sends the current feedback state ({feedback, note}) to
+  // main, which just stores the latest value in its per-session closure —
+  // same "renderer sends, main is the source of truth at close" shape as
+  // submitTurn above. Sent on every change (button click, note keystroke),
+  // not just once, so whatever's in main's closure at close time is always
+  // current regardless of how the panel actually closes.
+  setFeedback: (payload) => ipcRenderer.send('chat-feedback-set', payload),
 });

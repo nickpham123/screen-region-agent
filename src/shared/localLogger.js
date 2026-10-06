@@ -31,6 +31,12 @@ const LOG_PATH = path.join(app.getPath('userData'), 'conversations.jsonl');
 // "Next" section); those default to null until that UI exists, and get
 // filled in during Phase 3 curation for category, or a future feedback
 // capture step for the other two.
+//
+// feedbackNote (Phase 2.1, schema change — see decisions.md/system_design_
+// plan.md §5): optional free-text captured only when the user clicks 👎
+// ("what was wrong?"), never required. Defaults to null both for a 👍/no-
+// feedback conversation and for an existing pre-2.1 record being re-read —
+// this field simply didn't exist before, not "was null."
 function logConversation({
   cropPath,
   contextPath,
@@ -38,6 +44,7 @@ function logConversation({
   turns,
   category = null,
   feedback = null,
+  feedbackNote = null,
   source = 'real_usage',
   startedAt,
   endedAt,
@@ -50,6 +57,7 @@ function logConversation({
     turns,
     category,
     feedback,
+    feedback_note: feedbackNote,
     source,
     started_at: startedAt,
     ended_at: endedAt,

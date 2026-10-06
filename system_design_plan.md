@@ -88,6 +88,9 @@ Everything today lives in one process on the user's machine except the single ou
   ```
 - **Conversation scope — ephemeral, session-only**: turns within one open panel share context (the model sees the full history so far, so follow-ups like "give me an example" work). Once the panel closes, that conversation is over — nothing is resumed or persisted for later browsing. The full turn history is logged once, at close, for the fine-tuning dataset (see §5) — but that's a one-way write, not a resumable chat log.
 - **Note on voice**: audio never leaves the device — consistent with "nothing leaves the device without the active query." Transcription is record-then-transcribe-on-release, not live word-by-word streaming (whisper.cpp doesn't naturally support that without real added complexity — not worth it for v1).
+- **Feedback buttons** (Phase 2.1, implemented 2026-08-24): 👍/👎 in the title bar, persistent for the whole session, settable once per conversation. The `feedback` field itself already existed on the per-conversation record (§5) — but a real schema change came with this step anyway: an optional free-text `feedback_note` ("what was wrong?"), revealed only when 👎 is clicked, never required. Motivation and the fine-tuning-goal tension it responds to are in decisions.md. **Note submission is explicit** (refined 2026-08-25): Enter confirms the note, with a brief "✓ Noted" flash cue. Typing alone does not capture it — an unsubmitted note is discarded on close, not silently kept, which is the actual point of making submission explicit rather than cosmetic. A dedicated send button (claude.ai-style) was tried first and dropped — Enter alone already provides the real behavior (visible confirmation, discard-if-unsubmitted); the button only added a disabled/hover state for no behavior gain. See decisions.md.
+- **Captured-region thumbnail** (Phase 2.6): a small thumbnail of the circled region, shown in the panel from the moment it opens. Passed once at panel creation as a data URL from the already-in-memory capture — no extra file read or IPC round-trip needed. Clicking it opens the full crop image in the system's default viewer via `shell.openPath` over IPC.
+- **Hold-to-talk mic level indicator** (Phase 2.6): a real-time level meter driven by RMS computed inline in the existing `ScriptProcessorNode` callback that already has the raw PCM buffer in hand — not a decorative loop animation independent of actual mic input.
 
 ### 3.5 Vision Model Client
 - **Responsibility**: package image(s) + the running conversation into a model call, return the next answer
@@ -107,7 +110,25 @@ Everything today lives in one process on the user's machine except the single ou
 ### 3.7 Local Logger
 - **Responsibility**: on session close, write the complete conversation (all turns) to local storage in the fine-tuning-ready schema
 - **Tech**: SQLite (e.g. `better-sqlite3`) or flat JSONL file
-- **Interface**: `logConversation(cropPath, contextPath, appHint, turns, feedback)`
+- **Interface**: `logConversation(cropPath, contextPath, appHint, turns, feedback, feedbackNote)`
+
+### 3.8 Main App Window (Phase 2.2, shell implemented and hands-on verified 2026-08-25)
+- **Responsibility**: a persistent home for everything that isn't the ephemeral hotkey→overlay→chat flow — browsing past captures, changing settings, and a static help guide. Distinct lifecycle from the Overlay/Chat Panel: opened via the dock icon (a custom app menu item is explicitly deferred, see decisions.md), not the hotkey, and — unlike the Chat Panel's fresh-window-per-session design (§3.4, decisions.md) — this window persists and is reopened/reused across the app's runtime, not recreated per interaction.
+- **Tech**: a single persistent `BrowserWindow` (`src/mainWindow/mainWindow.html`). Captures/Settings/Help are views inside that one window, switched client-side via a sidebar — not three separate `BrowserWindow`s. Chosen to avoid tripling the window-lifecycle bookkeeping (focus, secondary-display Space handling, close semantics) already spent real debugging effort on for the Overlay and Chat Panel (see decisions.md). Phase 2.2 built the shell and navigation only — each view is a placeholder stub; real content is 2.3–2.5's job.
+- **Resolved: closing this window does not quit the app.** Normal macOS dock-app convention — the window's own close button is intercepted (`preventDefault()` + `hide()`, not destroyed, so reopening is instant) while `Cmd+Q` still quits for real, via an `isQuitting` flag set on `before-quit` that bypasses the intercept. `app.on('activate', ...)` calls a single idempotent `showOrCreateMainWindow()` to create the window lazily (not on launch — this app is hotkey-first) or reshow it if it already exists.
+- **A real environment-specific bug, found and fixed during first verification**: this Electron install doesn't auto-promote the app to a Dock-visible activation policy on its own — no Dock icon ever appeared until `app.dock.show()` was called explicitly in `app.whenReady()`. Root-caused via a throwaway diagnostic + macOS's own `osascript` activation-policy query, not assumed from Electron's docs — full evidence trail in decisions.md.
+
+**Settings page** (Phase 2.3, implemented 2026-08-25 — hands-on verification still open, see todo.md):
+- Hotkey — changing it requires a real hold-drag-release gesture test before saving, not a static validity check. Reuses this project's own "registration success proves nothing" lesson (decisions.md): a candidate accelerator can register cleanly via `globalShortcut.register()` and still fail for reasons no static check catches. Implemented by reusing the production gesture/watchdog machinery itself (a `hotkeyTestMode` flag, `activateGestureOverlay()` extracted for both paths to share) rather than a parallel test harness — full failure/timeout design in decisions.md: a below-minimum gesture re-arms for another attempt, a real timeout or an already-claimed accelerator reverts to production, and a pass requires an explicit Save click.
+- Display name — local-only field, explicitly **not** authentication. Real user auth stays exactly as already scoped at Phase 7 (Supabase Auth), unaffected by this.
+- Theme — Electron's `nativeTheme.themeSource` + CSS `prefers-color-scheme`, light/dark/system. Both already built into Electron/Chromium, no new dependency. `themeSource` propagates to `prefers-color-scheme` in every open renderer automatically — no IPC broadcast or `data-theme` attribute needed (decisions.md).
+- Dictation language — a pinned-language picker (English/Vietnamese/Spanish), not an auto-detect toggle: auto-detection is less reliable on the short clips a hold-to-talk gesture typically produces, and pinning explicit languages doesn't cost more to verify than a toggle would have (decisions.md). Reopens the already-flagged model-size tradeoff (todo.md) rather than being independent of it. **Each language needs its own accuracy verification pass before being marked verified** — not assumed to work from the model swap alone; only English (unchanged from Step 5) has that verification so far.
+- App language / full i18n — shown disabled ("coming soon") rather than omitted or silently built. Deferred because translation debt scales with a UI surface that's still actively changing.
+- Data and privacy — capture storage location + an open-folder action + a clear-all action (native confirm dialog before deleting; leaves `settings.json` itself untouched). Justified by the pre-existing privacy-first constraint (§1: "no silent capture, no unnecessary retention"), not new scope — this makes that commitment visible and actionable.
+
+**Captures page**: reads `conversations.jsonl` (§5), reverse-chronological list — thumbnail, first question, timestamp, and a feedback icon if `feedback` is set on that record.
+
+**Help page**: a static in-app usage guide (hotkey, basic flow). No external link — no marketing/support site exists yet (see decisions.md).
 
 ---
 
@@ -171,6 +192,7 @@ One record per **conversation** (not per turn) — a session can have multiple b
 | `turns` | array | ordered list of `{role: "user"\|"assistant", content: string}` |
 | `category` | enum | code / chart / ui / text / math / translation |
 | `feedback` | enum or null | thumbs_up / thumbs_down / none — captured once, for the conversation as a whole |
+| `feedback_note` | string or null | **New field, Phase 2.1 (2026-08-24).** Optional free-text captured only when `feedback` is thumbs_down ("what was wrong?"), never required to submit. Absent/null on every pre-2.1 record and on any thumbs_up/no-feedback conversation |
 | `source` | enum | real_usage / synthetic |
 | `started_at` / `ended_at` | datetime | session bounds |
 

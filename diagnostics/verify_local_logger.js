@@ -21,7 +21,7 @@
 
 const { app } = require('electron');
 const fs = require('fs');
-const { logConversation, LOG_PATH } = require('../localLogger');
+const { logConversation, LOG_PATH } = require('../src/shared/localLogger');
 
 function assert(cond, msg) {
   if (!cond) throw new Error('FAIL: ' + msg);

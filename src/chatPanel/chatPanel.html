@@ -13,6 +13,73 @@
       background: #1e1e1e;
       color: #e8e8e8;
     }
+    /* Phase 2.1: feedback buttons, persistent for the whole session. */
+    #titlebar {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 4px;
+      padding: 6px 10px;
+      border-bottom: 1px solid #333;
+      -webkit-app-region: drag; /* lets the bar still drag-move the window */
+    }
+    #titlebar button {
+      -webkit-app-region: no-drag; /* buttons themselves must stay clickable */
+      background: none;
+      border: none;
+      border-radius: 6px;
+      font-size: 15px;
+      padding: 3px 7px;
+      cursor: pointer;
+      opacity: 0.6;
+    }
+    #titlebar button:hover {
+      opacity: 0.85;
+      background: #333;
+    }
+    #titlebar button.active {
+      opacity: 1;
+      background: #333;
+    }
+    #feedbackNoteWrap {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      padding: 0 10px 8px;
+      border-bottom: 1px solid #333;
+    }
+    #feedbackNoteWrap.visible {
+      display: flex;
+    }
+    #feedbackNote {
+      flex: 1;
+      min-width: 0;
+      box-sizing: border-box;
+      background: #2a2a2a;
+      color: #e8e8e8;
+      border: 1px solid #444;
+      border-radius: 6px;
+      padding: 6px 8px;
+      font-size: 12px;
+      font-family: inherit;
+      outline: none;
+    }
+    /* Explicit submit affordance: Enter confirms the note (a dedicated
+       send button was tried and dropped — Enter alone already gives the
+       real behavior this needed: visible confirmation + an unconfirmed
+       note discarded on close, see decisions.md). This is just the brief
+       "✓ Noted" flash, same transient-cue convention as #recording's
+       flashRecordingStatus() below. */
+    #feedbackNoteConfirm {
+      flex-shrink: 0;
+      font-size: 11px;
+      color: #6fcf8f;
+      opacity: 0;
+      transition: opacity 0.2s ease;
+    }
+    #feedbackNoteConfirm.visible {
+      opacity: 1;
+    }
     #history {
       flex: 1;
       overflow-y: auto;
@@ -87,6 +154,14 @@
   </style>
 </head>
 <body>
+  <div id="titlebar">
+    <button id="feedbackUp" title="Good response">👍</button>
+    <button id="feedbackDown" title="Bad response">👎</button>
+  </div>
+  <div id="feedbackNoteWrap">
+    <input id="feedbackNote" type="text" placeholder="What was wrong? (optional, press Enter)" />
+    <span id="feedbackNoteConfirm">✓ Noted</span>
+  </div>
   <div id="history"></div>
   <div id="recording">🎤 Recording — release the key to stop</div>
   <div id="loading">🤔 Thinking…</div>
@@ -109,10 +184,79 @@
   <script>
     const historyEl = document.getElementById('history');
     const inputEl = document.getElementById('input');
+    const feedbackUpEl = document.getElementById('feedbackUp');
+    const feedbackDownEl = document.getElementById('feedbackDown');
+    const feedbackNoteWrapEl = document.getElementById('feedbackNoteWrap');
+    const feedbackNoteEl = document.getElementById('feedbackNote');
+    const feedbackNoteConfirmEl = document.getElementById('feedbackNoteConfirm');
     const recordingEl = document.getElementById('recording');
     const loadingEl = document.getElementById('loading');
     const RECORDING_DEFAULT_TEXT = recordingEl.textContent;
     inputEl.focus();
+
+    // Phase 2.1: feedback state, one value for the whole conversation (not
+    // per-turn) — 'thumbs_up' | 'thumbs_down' | null, sent to main
+    // immediately on change (main is the source of truth at close time,
+    // same shape as `turns` — see main.js/decisions.md).
+    //
+    // confirmedNote is deliberately separate from the field's live value:
+    // it only ever updates via an explicit submit (Enter, see submitNote()
+    // below) — typing alone never sets it. This is a real behavior change
+    // from the first Phase 2.1 pass (which streamed the note on every
+    // keystroke): an unsubmitted note is now discarded on close, not
+    // silently captured — that's the actual meaning of an explicit submit
+    // affordance, not just decoration. A dedicated send button was tried
+    // and dropped (2026-08-25, see decisions.md) — it added a
+    // disabled/hover state for behavior Enter alone already provides.
+    let feedbackState = null;
+    let confirmedNote = null;
+
+    function sendFeedback() {
+      window.chatPanelAPI.setFeedback({
+        feedback: feedbackState,
+        note: feedbackState === 'thumbs_down' ? confirmedNote : null,
+      });
+    }
+
+    feedbackUpEl.addEventListener('click', () => {
+      feedbackState = 'thumbs_up';
+      feedbackUpEl.classList.add('active');
+      feedbackDownEl.classList.remove('active');
+      // Switching to 👍 hides and clears the note — "what was wrong?" no
+      // longer applies once the verdict is positive.
+      feedbackNoteWrapEl.classList.remove('visible');
+      feedbackNoteEl.value = '';
+      confirmedNote = null;
+      sendFeedback();
+    });
+
+    feedbackDownEl.addEventListener('click', () => {
+      feedbackState = 'thumbs_down';
+      feedbackDownEl.classList.add('active');
+      feedbackUpEl.classList.remove('active');
+      feedbackNoteWrapEl.classList.add('visible');
+      feedbackNoteEl.focus();
+      sendFeedback();
+    });
+
+    function submitNote() {
+      const text = feedbackNoteEl.value.trim();
+      if (!text) return; // nothing to submit
+      confirmedNote = text;
+      sendFeedback();
+      // Same "brief flash cue, never a silent nothing-happened" convention
+      // this app already uses elsewhere (flashRecordingStatus, the
+      // overlay's reset-flash) — a captured action needs visible
+      // confirmation, not just a state change nobody can see.
+      feedbackNoteConfirmEl.classList.add('visible');
+      setTimeout(() => feedbackNoteConfirmEl.classList.remove('visible'), 1200);
+    }
+
+    feedbackNoteEl.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      submitNote();
+    });
 
     // True while a model call is in flight — gates submission (one call at
     // a time; the input is also disabled below as the visible half of the
@@ -140,21 +284,24 @@
     // failure), so it can never leak into what's sent to Mistral or
     // eventually logged. The retry link re-sends the same still-unanswered
     // user turn main already has; disabled after one click so a fast
-    // double-click can't fire two overlapping retries.
-    function renderError(message) {
+    // double-click can't fire two overlapping retries. No link at all when
+    // the failure is permanent (retryable === false, e.g. quota_zero).
+    function renderError(message, retryable) {
       const el = document.createElement('div');
       el.className = 'turn error';
       el.textContent = message + ' ';
-      const retry = document.createElement('span');
-      retry.className = 'retry-link';
-      retry.textContent = 'Retry';
-      retry.addEventListener('click', () => {
-        if (awaitingReply) return;
-        retry.textContent = 'Retrying…';
-        retry.style.pointerEvents = 'none';
-        window.chatPanelAPI.retryLastTurn();
-      });
-      el.appendChild(retry);
+      if (retryable !== false) {
+        const retry = document.createElement('span');
+        retry.className = 'retry-link';
+        retry.textContent = 'Retry';
+        retry.addEventListener('click', () => {
+          if (awaitingReply) return;
+          retry.textContent = 'Retrying…';
+          retry.style.pointerEvents = 'none';
+          window.chatPanelAPI.retryLastTurn();
+        });
+        el.appendChild(retry);
+      }
       historyEl.appendChild(el);
       historyEl.scrollTop = historyEl.scrollHeight;
     }
@@ -166,9 +313,9 @@
       renderTurn(turn);
     });
 
-    window.chatPanelAPI.onChatError((message) => {
+    window.chatPanelAPI.onChatError((message, retryable) => {
       setAwaitingReply(false);
-      renderError(message);
+      renderError(message, retryable);
     });
 
     // Grows the box to fit its content (up to the CSS max-height, beyond
@@ -213,6 +360,13 @@
     }
 
     let holding = false;
+    // Which key's keyup ends the hold — supplied by main on each
+    // 'hold-to-talk-start' rather than hardcoded, so a changed Settings
+    // hotkey (e.g. Control+2/Digit2) is honored instead of silently
+    // matching nothing. Same pattern overlay.js already uses for its own
+    // triggerKeyCode, added here 2026-08-25 after this was found broken by
+    // real hands-on testing — see decisions.md.
+    let triggerKeyCode = null;
 
     // Audio-graph state for the current hold, torn down by stopRecording()
     // regardless of how the hold ends (real keyup or watchdog cancel).
@@ -256,7 +410,8 @@
       return { samples: merged, sampleRate: actualSampleRate };
     }
 
-    window.chatPanelAPI.onHoldToTalkStart(async () => {
+    window.chatPanelAPI.onHoldToTalkStart(async (currentTriggerKeyCode) => {
+      triggerKeyCode = currentTriggerKeyCode;
       holding = true;
       recordingEl.textContent = RECORDING_DEFAULT_TEXT;
       recordingEl.classList.add('active');
@@ -344,7 +499,7 @@
     });
 
     window.addEventListener('keydown', (e) => {
-      if (e.code !== 'Digit1' || !holding) return;
+      if (e.code !== triggerKeyCode || !holding) return;
       // Every keydown re-arms the main-process watchdog, same as the
       // overlay's gestureAlive — not gated on e.repeat, since the first one
       // this listener ever sees for a given hold is already a repeat (the
@@ -353,7 +508,7 @@
     });
 
     window.addEventListener('keyup', (e) => {
-      if (e.code !== 'Digit1' || !holding) return;
+      if (e.code !== triggerKeyCode || !holding) return;
       holding = false;
       recordingEl.classList.remove('active');
       window.chatPanelAPI.debugLog('[hold-to-talk] ended by real keyup');
