@@ -66,6 +66,8 @@ are (that file's rule: never delete rows). New errors go here.
     - labs-leanstral-1-5 / -1-5-1: 403 (1913), no headers (unexplained)
   - 95760e4: repro script now prints `FAILED [quota_zero] This API key has no quota for model mistral-small-latest.` on all three attempts. Mocked 429s with limit 60 or no headers still give `rate_limit` + retryable. The real chatPanel.html, loaded in a throwaway Electron window, rendered the quota message with zero `.retry-link` elements.
   - Not run: the in-app repro through a real hotkey gesture (needs the user's hands).
+  - `mistral-large-2512` (shown in the user's console) is absent from GET /v1/models: no id, name or alias contains "large" among the 46 ids. But GET /v1/models/mistral-large-2512 returns 200 (capabilities.vision true), and a text-only chat call returns `403 {"type":"tier_not_allowed","code":"1910","message":"This model is not available in your subscription tier"}`, with no rate-limit headers (ad hoc, 2026-10-06T03:05Z). So the API's explicit tier gate is a 403/1910. Why small/medium instead get a 429/1300 with limit 0 remains unexplained.
+  - `node diagnostics/compare_vision_models.js <captures> <scratch.md>`, 2026-10-06T03:05Z, via the real askAboutRegion() with a fetch-level model override: all 24 calls returned 200. Prompt tokens were identical across ministral-14b/8b/3b: a 2992x1934 whole-screen PNG costs 2025 (Q1) / 2028 (Q2) tokens; the 1208x582 and 936x806 crops cost 954 / 1024. Answer quality has not been judged yet (by the user).
 
 ---
 
