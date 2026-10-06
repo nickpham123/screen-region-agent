@@ -95,7 +95,7 @@ Concrete next actions, not aspirational plans (those live in `implementation_pla
 
 ## Open questions blocking later phases
 
-- [ ] **Vision calls are blocked: `mistral-small` has a request limit of 0 on this key** — see errors.md E-001. Pending: account-side fix vs. a MODEL_ID change (which would supersede decisions.md row 1)
+- [x] **Vision calls were blocked (`mistral-small` limit 0 on this key)** — worked around 2026-10-06 by switching to `ministral-14b-2512` (88bf7c6, decisions.md row 2); see errors.md E-001 (root cause still unconfirmed) and E-012
 
 - [ ] Whether `image_context` (full screenshot) is always sent alongside the crop, or only conditionally — now relevant per-turn, not just once per session
 - [ ] ~~Which whisper.cpp model size to bundle~~ — **folded into "Next — Phase 2" item 2.3's Dictation language sub-item (2026-08-24)**, since Settings' dictation-language control reopens exactly this tradeoff. How the model file gets distributed with the packaged app is still separately tracked under the blocking pre-packaging checklist item below.

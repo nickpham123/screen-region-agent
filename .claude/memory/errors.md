@@ -27,8 +27,23 @@ are (that file's rule: never delete rows). New errors go here.
 
 ---
 
+### E-012 — Vision models invent text for covered or cut-off screen text
+- Status: watching
+- First seen: 2026-10-06, fix-mistral-429, during the E-001 model comparison
+- Symptom: when part of the on-screen text is cut off by the crop edge or covered by another window, the answer fills it in with plausible text that isn't on screen, instead of stopping or marking it.
+- Cause: unconfirmed: model behavior. Seen on all three `ministral-*-2512` models; untested on others.
+- Evidence (counts only; `compare_vision_models.js --runs 3` + `score_transcriptions.js`, key = fb8e7e0 chatPanel.html lines 499/502/508, 6 attempts per cell = 3 runs × 2 transcription prompts):
+  - Line 508, only `if (` visible (rest covered by a window): honest in the crop 6/6 (14b), 4/6 (8b), 0/6 (3b). Honest in the whole-screen image 0/6 for all three; the rest were invented, omitted, or merged with the covering window's text. None of the invented lines matched the repo's real line 508.
+  - Line 502, cut by the crop edge: honest 2/6 (14b), 3/6 (8b), 0/6 (3b).
+  - Adding "If any part is cut off or unreadable, write [unreadable] instead of guessing" (Q3 vs plain Q2): invented 7→4 (14b), 5→4 (8b), 8→7 (3b), out of 15 each. This is within what run-to-run variation could produce, so it doesn't fix the problem. 3b used the literal `[unreadable]` most (7/12 answers) but still invented at the scored spots.
+  - Also seen on the shipped model in a normal question after 88bf7c6: a crop whose window title is cut off at its first letter got answered with a filled-in first letter in 2/2 calls (`verify_visionclient.js`).
+- Fix: none. 14b was chosen partly because it's the most honest of the three in crops (decisions.md row 2).
+- Avoid: don't treat an answer's transcription of text at a crop edge or under another window as reliable. Candidate mitigations, none built: a system prompt, sending the full screenshot for context (todo.md's deferred hybrid-context follow-up), or Phase 3/4 training data that rewards marking cut-off text.
+
+---
+
 ### E-001 — "Too many requests, try again in a moment." on every vision call
-- Status: mitigated (the app now reports it honestly; no vision call to `mistral-small` can succeed until the limit or MODEL_ID changes)
+- Status: fixed (workaround: model switched to `ministral-14b-2512`, 88bf7c6). The root cause of the 0 limit on mistral-small/medium is still unconfirmed; see Cause.
 - First seen: 2026-10-05, phase-2.3 (e4ce0ab). Noticed after a whole-screen capture, but image size turned out to be irrelevant.
 - Symptom: Chat Panel shows "Too many requests, try again in a moment." with a Retry link. Clicking it shows "Retrying…" and the same error comes back.
 - Cause: confirmed: the per-minute request limit is 0 for mistral-small-latest on this key. Mistral returns HTTP 429 with `x-ratelimit-limit-req-minute: 0`, no `retry-after`, body `{"message":"Rate limit exceeded","type":"rate_limited","code":"1300"}`. The pinned id `mistral-small-2603` behaves identically, so this isn't an alias issue.
@@ -38,7 +53,10 @@ are (that file's rule: never delete rows). New errors go here.
   - Burst / per-second window: the first request in a fresh process 429s, as do requests after 60s idle and at 3s spacing.
   - Workspace-wide block: the `ministral-*` models return 200 on the same key.
   - Instant Retry is real (main.js `onRetry`), but it's not the cause. Waiting can't help when the limit is 0.
-- Fix: 95760e4: a 429 with any `x-ratelimit-limit-*` of "0" now throws `quota_zero`. The panel says "This model has no quota on your Mistral plan. Check your Mistral console limits." with no Retry link. Other 429s stay `rate_limit`. This is a mitigation, not a fix: the underlying choice (account-side, or a MODEL_ID change that supersedes decisions.md row 1) is pending.
+- Fix: a workaround, not a root-cause fix.
+  - 88bf7c6: MODEL_ID switched to `ministral-14b-2512`, pinned. The decision is recorded in f09f8c9 (decisions.md row 2, superseding row 1) as a stopgap until the Phase 4 fine-tune.
+  - 95760e4 (kept): a 429 with any `x-ratelimit-limit-*` of "0" throws `quota_zero`. The panel says "This model has no quota on your Mistral plan. Check your Mistral console limits." with no Retry link. Other 429s stay `rate_limit`.
+  - Still unconfirmed: why mistral-small/medium have a limit of 0 on this key while the console shows a non-zero limit. Switching back needs that answered first.
 - Avoid: never map a status code straight to "try again" without checking whether the failure is transient. d51ac58 logs status, body and all headers on every non-2xx, so a zero limit shows up in the log.
 - Evidence:
   - d51ac58, `node diagnostics/repro_rate_limit.js <full.png> <crop.png>`, 2026-10-06T02:41Z (headers trimmed to the rate-limit ones):
@@ -69,6 +87,7 @@ are (that file's rule: never delete rows). New errors go here.
   - `mistral-large-2512` (shown in the user's console) is absent from GET /v1/models: no id, name or alias contains "large" among the 46 ids. But GET /v1/models/mistral-large-2512 returns 200 (capabilities.vision true), and a text-only chat call returns `403 {"type":"tier_not_allowed","code":"1910","message":"This model is not available in your subscription tier"}`, with no rate-limit headers (ad hoc, 2026-10-06T03:05Z). So the API's explicit tier gate is a 403/1910. Why small/medium instead get a 429/1300 with limit 0 remains unexplained.
   - `node diagnostics/compare_vision_models.js <captures> <scratch.md>`, 2026-10-06T03:05Z, via the real askAboutRegion() with a fetch-level model override: all 24 calls returned 200. Prompt tokens were identical across ministral-14b/8b/3b: a 2992x1934 whole-screen PNG costs 2025 (Q1) / 2028 (Q2) tokens; the 1208x582 and 936x806 crops cost 954 / 1024. Answer quality has not been judged yet (by the user).
   - Variance + exact scoring, 2026-10-06: `compare_vision_models.js --runs 3` (108 calls, all 200; prompt tokens identical across models and runs), scored by `diagnostics/score_transcriptions.js` against `git show fb8e7e0:src/chatPanel/chatPanel.html` lines 499/502/508. All 90 classifications were audited by hand; two rounds of scorer fixes came from that audit. Invented text (Q2 plain transcribe → Q3 "write [unreadable]"), out of 15 each: 14b 7→4, 8b 5→4, 3b 8→7. No model's output on the hidden line 508 matched the repo key. Raw results/scores are in session scratch only (they hold screen content).
+  - After 88bf7c6, `node diagnostics/repro_rate_limit.js <full.png> <crop.png>`, 2026-10-06T03:53Z: whole-screen 200 (prompt_tokens 2030), immediate re-send 200, small crop after 60s 200 (prompt_tokens 1029). Headers on each: `x-ratelimit-limit-req-minute: 30`, `x-ratelimit-limit-tokens-minute: 937500`, remaining 29/28/29. `verify_visionclient.js` passes single-turn, follow-up and missing-key checks. A real hotkey capture has not been run yet (by Claude); the user is running one.
 
 ---
 
