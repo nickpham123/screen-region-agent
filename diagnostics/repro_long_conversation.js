@@ -14,7 +14,10 @@
 // scratch or gitignored path, never commit it. The console prints counts only.
 //
 // Requires MISTRAL_API_KEY in .env.
-// Run: node diagnostics/repro_long_conversation.js <capture.png> <out.json> [--repeats N]
+// --depth-turn adds a 4th turn asking for depth, to check that answers stay
+// short by default but get longer when the user asks.
+//
+// Run: node diagnostics/repro_long_conversation.js <capture.png> <out.json> [--repeats N] [--depth-turn]
 
 const fs = require('fs');
 const { askAboutRegion } = require('../src/shared/visionClient');
@@ -24,6 +27,7 @@ const QUESTIONS = [
   'How should I get started',
   'What if I have programming experience, help me learn slowly step by step',
 ];
+const DEPTH_QUESTION = 'go deeper on the first step';
 // ministral-14b's limit is 30 req/min (model_quota_sweep.js).
 const SPACING_MS = 2500;
 
@@ -71,26 +75,29 @@ function summarize(r) {
 
 async function main() {
   const args = process.argv.slice(2);
+  const depthIdx = args.indexOf('--depth-turn');
+  if (depthIdx !== -1) args.splice(depthIdx, 1);
+  const questions = depthIdx === -1 ? QUESTIONS : [...QUESTIONS, DEPTH_QUESTION];
   const repeatsIdx = args.indexOf('--repeats');
   const repeats = repeatsIdx === -1 ? 3 : Number(args.splice(repeatsIdx, 2)[1]);
   const [imagePath, outPath] = args;
   if (!imagePath || !outPath || !fs.existsSync(imagePath)) {
-    console.error('Usage: node diagnostics/repro_long_conversation.js <capture.png> <out.json> [--repeats N]');
+    console.error('Usage: node diagnostics/repro_long_conversation.js <capture.png> <out.json> [--repeats N] [--depth-turn]');
     process.exit(1);
   }
 
   const results = [];
   for (let rep = 1; rep <= repeats; rep++) {
     const history = [];
-    for (let turn = 1; turn <= QUESTIONS.length; turn++) {
-      history.push({ role: 'user', content: QUESTIONS[turn - 1] });
+    for (let turn = 1; turn <= questions.length; turn++) {
+      history.push({ role: 'user', content: questions[turn - 1] });
       const attempts = [await callOnce(imagePath, history)];
       console.log(`rep ${rep} turn ${turn}: ${summarize(attempts[0])}`);
       if (!attempts[0].ok) {
         attempts.push(await callOnce(imagePath, history));
         console.log(`rep ${rep} turn ${turn} retry: ${summarize(attempts[1])}`);
       }
-      results.push({ rep, turn, question: QUESTIONS[turn - 1], attempts });
+      results.push({ rep, turn, question: questions[turn - 1], attempts });
       const answered = attempts.find((a) => a.ok);
       if (!answered) break;
       history.push({ role: 'assistant', content: answered.answer });
