@@ -163,9 +163,9 @@ async function askAboutRegion(imagePath, conversationHistory, { signal: external
   lastRequestStartedAt = now;
 
   const controller = new AbortController();
-  // [vision-diag] Our timeout and the external cancel abort the same
-  // controller, so this flag is the only way to tell from the log which
-  // one fired (the turn-3 "Couldn't reach the model" investigation).
+  // Our timeout and the external cancel abort the same controller, so this
+  // flag is the only way to tell which one fired, both for the log and for
+  // the `timeout` code below (errors.md E-013).
   let timedOut = false;
   const timeout = setTimeout(() => {
     timedOut = true;
@@ -204,6 +204,12 @@ async function askAboutRegion(imagePath, conversationHistory, { signal: external
     // knows not to show an error or log anything (see responseHandler.js).
     if (externalSignal?.aborted) {
       throw apiError('cancelled', 'Request was cancelled.', err);
+    }
+    // Our own timeout is not a connectivity failure: a long answer can
+    // legitimately take longer to generate (E-013), so it gets its own code
+    // instead of `network`'s "check your connection".
+    if (timedOut) {
+      throw apiError('timeout', `Mistral API did not answer within ${REQUEST_TIMEOUT_MS / 1000}s.`, err);
     }
     throw apiError('network', 'Could not reach the Mistral API.', err);
   } finally {

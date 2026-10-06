@@ -28,6 +28,7 @@ function log(...args) {
 // gets a generic message rather than being left unhandled.
 const ERROR_MESSAGES = {
   network: "Couldn't reach the model — check your connection.",
+  timeout: 'The model took too long to answer — try again or ask for a shorter answer.',
   rate_limit: 'Too many requests, try again in a moment.',
   quota_zero: 'This model has no quota on your Mistral plan. Check your Mistral console limits.',
   malformed: "Didn't get a usable answer — try rephrasing.",
