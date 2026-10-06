@@ -17,8 +17,9 @@ contextBridge.exposeInMainWorld('chatPanelAPI', {
   onAssistantReply: (callback) => ipcRenderer.on('chat-assistant-reply', (event, turn) => callback(turn)),
   // A §7-mapped, user-safe error message (network/rate-limit/malformed/
   // other) — never a raw error object, since the Response Handler already
-  // did that translation.
-  onChatError: (callback) => ipcRenderer.on('chat-error', (event, message) => callback(message)),
+  // did that translation. `retryable` is false for a permanent failure
+  // (quota_zero), so the renderer knows not to offer Retry.
+  onChatError: (callback) => ipcRenderer.on('chat-error', (event, message, retryable) => callback(message, retryable)),
   // Re-attempts the last (still-unanswered) user turn after an error, per
   // §7's "retry button" — no new turn to send, main already has it.
   retryLastTurn: () => ipcRenderer.send('chat-retry'),

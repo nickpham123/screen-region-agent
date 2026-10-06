@@ -180,6 +180,17 @@ async function askAboutRegion(imagePath, conversationHistory, { signal: external
       headers: headersToObject(response.headers),
     }));
     if (response.status === 429) {
+      // A 429 can mean "slow down" (transient) or "this key has no quota
+      // for this model at all" (permanent) — errors.md E-001 was the
+      // latter, signalled by an x-ratelimit-limit-* header of "0". Retrying
+      // can never succeed there, so it gets its own code rather than
+      // rate_limit's "try again in a moment".
+      const zeroLimit = [...response.headers].some(
+        ([name, value]) => /^x-ratelimit-limit-/i.test(name) && value.trim() === '0'
+      );
+      if (zeroLimit) {
+        throw apiError('quota_zero', `This API key has no quota for model ${MODEL_ID}.`);
+      }
       throw apiError('rate_limit', 'Mistral API rate limit hit.');
     }
     throw apiError(

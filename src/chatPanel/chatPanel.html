@@ -284,21 +284,24 @@
     // failure), so it can never leak into what's sent to Mistral or
     // eventually logged. The retry link re-sends the same still-unanswered
     // user turn main already has; disabled after one click so a fast
-    // double-click can't fire two overlapping retries.
-    function renderError(message) {
+    // double-click can't fire two overlapping retries. No link at all when
+    // the failure is permanent (retryable === false, e.g. quota_zero).
+    function renderError(message, retryable) {
       const el = document.createElement('div');
       el.className = 'turn error';
       el.textContent = message + ' ';
-      const retry = document.createElement('span');
-      retry.className = 'retry-link';
-      retry.textContent = 'Retry';
-      retry.addEventListener('click', () => {
-        if (awaitingReply) return;
-        retry.textContent = 'Retrying…';
-        retry.style.pointerEvents = 'none';
-        window.chatPanelAPI.retryLastTurn();
-      });
-      el.appendChild(retry);
+      if (retryable !== false) {
+        const retry = document.createElement('span');
+        retry.className = 'retry-link';
+        retry.textContent = 'Retry';
+        retry.addEventListener('click', () => {
+          if (awaitingReply) return;
+          retry.textContent = 'Retrying…';
+          retry.style.pointerEvents = 'none';
+          window.chatPanelAPI.retryLastTurn();
+        });
+        el.appendChild(retry);
+      }
       historyEl.appendChild(el);
       historyEl.scrollTop = historyEl.scrollHeight;
     }
@@ -310,9 +313,9 @@
       renderTurn(turn);
     });
 
-    window.chatPanelAPI.onChatError((message) => {
+    window.chatPanelAPI.onChatError((message, retryable) => {
       setAwaitingReply(false);
-      renderError(message);
+      renderError(message, retryable);
     });
 
     // Grows the box to fit its content (up to the CSS max-height, beyond

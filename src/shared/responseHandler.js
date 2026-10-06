@@ -29,6 +29,7 @@ function log(...args) {
 const ERROR_MESSAGES = {
   network: "Couldn't reach the model — check your connection.",
   rate_limit: 'Too many requests, try again in a moment.',
+  quota_zero: 'This model has no quota on your Mistral plan. Check your Mistral console limits.',
   malformed: "Didn't get a usable answer — try rephrasing.",
   api_error: "Something went wrong on the model's end — try again.",
 };
@@ -69,7 +70,10 @@ function handleUserTurn(chatPanelWindow, cropPath, turns) {
       log(`Vision call failed [${err.code}]:`, err.message);
       if (chatPanelWindow.isDestroyed()) return;
       const message = ERROR_MESSAGES[err.code] || 'Something went wrong — try again.';
-      chatPanelWindow.webContents.send('chat-error', message);
+      // quota_zero is permanent (errors.md E-001) — the panel hides Retry
+      // for it, since re-sending can never succeed.
+      const retryable = err.code !== 'quota_zero';
+      chatPanelWindow.webContents.send('chat-error', message, retryable);
     });
 
   return { controller, done };
