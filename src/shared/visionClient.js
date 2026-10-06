@@ -36,6 +36,25 @@ const CHAT_COMPLETIONS_URL = 'https://api.mistral.ai/v1/chat/completions';
 // real usage shows longer calls legitimately timing out.
 const REQUEST_TIMEOUT_MS = 30_000;
 
+// Product intent (CLAUDE.md "Product intent"): a screen region learning
+// assistant, so answers teach in short form first and go deeper only on
+// follow-up. Without this, ministral-14b wrote 1-3k-token tutorials per
+// turn, long enough to hit REQUEST_TIMEOUT_MS by turn 3 (errors.md E-013).
+// Prepended privately in buildMessages(), never added to
+// conversationHistory, so the logged conversation stays plain turns; a
+// future backend can bring its own prompt or none.
+const SYSTEM_PROMPT = `You are a screen-region learning assistant. The user has selected part of their screen and is asking about it in order to understand or learn from it.
+- Answer the question asked about the region first, in 2-4 short sentences of plain language.
+- Teach, don't lecture: give the core idea and, only if it helps, one small example. Don't list every option, step or tool.
+- End with at most one short line offering a natural deeper step (e.g. "Want me to walk through X?"). Do not answer that deeper question until the user asks.
+- Go deeper only when the user follows up, and expand on exactly what they asked. If they say they already know something or want it step by step, match that level and give only the next step.
+- Only describe text and details you can actually read in the region. If something is cut off or unclear, say so instead of guessing.
+- Don't restate the question or pad. Use formatting only where it helps, such as a short code block for code.`;
+
+// Runaway guard, not the style mechanism (SYSTEM_PROMPT is). A cut-off
+// answer shows up as finish_reason "length" in the [vision-diag] log.
+const MAX_TOKENS = 1024;
+
 function getApiKey() {
   const apiKey = process.env.MISTRAL_API_KEY;
   if (!apiKey) {
@@ -92,9 +111,10 @@ let lastRequestStartedAt = null;
 // stateless), which is exactly what makes "attach to turn 0" sufficient —
 // no separate "have I sent the image yet" bookkeeping needed, since turn 0
 // is present in the array on every call regardless of how many turns have
-// accumulated since.
+// accumulated since. SYSTEM_PROMPT goes in front of the mapped history,
+// so "turn 0" still means the first history turn.
 function buildMessages(imagePath, conversationHistory) {
-  return conversationHistory.map((turn, i) => {
+  const turns = conversationHistory.map((turn, i) => {
     if (i !== 0) return { role: turn.role, content: turn.content };
     return {
       role: turn.role,
@@ -104,6 +124,7 @@ function buildMessages(imagePath, conversationHistory) {
       ],
     };
   });
+  return [{ role: 'system', content: SYSTEM_PROMPT }, ...turns];
 }
 
 // Failures are thrown as Errors carrying a `.code`, so the Response
@@ -131,7 +152,7 @@ async function askAboutRegion(imagePath, conversationHistory, { signal: external
 
   const imageBuf = fs.readFileSync(imagePath);
   const now = Date.now();
-  const body = JSON.stringify({ model: MODEL_ID, messages });
+  const body = JSON.stringify({ model: MODEL_ID, messages, max_tokens: MAX_TOKENS });
   diagLog('request:', JSON.stringify({
     imageBytes: imageBuf.length,
     imagePixels: pngDimensions(imageBuf),
