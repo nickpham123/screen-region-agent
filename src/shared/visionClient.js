@@ -54,6 +54,37 @@ function encodeImageDataUri(imagePath) {
   return `data:${mimeTypeFor(imagePath)};base64,${b64}`;
 }
 
+// [vision-diag] — logging only, added to diagnose a real HTTP 429 after a
+// whole-screen capture (errors.md E-001). The 429 branch below used to
+// throw without reading the body or headers, so which limit tripped was
+// unknowable. Same timestamped shape as responseHandler.js's log().
+function diagLog(...args) {
+  console.log(new Date().toISOString(), '[vision-diag]', ...args);
+}
+
+// Width/height straight from the PNG IHDR chunk (bytes 16-23) — every
+// crop this app writes is a PNG (capture.js), so no image library needed
+// just to log two numbers. null for anything else.
+function pngDimensions(buf) {
+  const PNG_SIGNATURE = '89504e470d0a1a0a';
+  if (buf.length < 24 || buf.subarray(0, 8).toString('hex') !== PNG_SIGNATURE) return null;
+  return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+}
+
+// Every header on a failed response (not just a rate-limit-name filter —
+// an unexpected header name shouldn't be able to hide the evidence); only
+// the rate-limit ones on success, to see how close a normal call runs.
+function headersToObject(headers, filter) {
+  const out = {};
+  for (const [name, value] of headers) {
+    if (!filter || filter.test(name)) out[name] = value;
+  }
+  return out;
+}
+const RATE_LIMIT_HEADER = /ratelimit|retry-after/i;
+
+let lastRequestStartedAt = null;
+
 // Builds Mistral's messages array from conversationHistory, attaching the
 // image to turn 0 unconditionally. Rebuilt fresh on every call (the API is
 // stateless), which is exactly what makes "attach to turn 0" sufficient —
@@ -96,6 +127,18 @@ async function askAboutRegion(imagePath, conversationHistory, { signal: external
   const apiKey = getApiKey();
   const messages = buildMessages(imagePath, conversationHistory);
 
+  const imageBuf = fs.readFileSync(imagePath);
+  const now = Date.now();
+  const body = JSON.stringify({ model: MODEL_ID, messages });
+  diagLog('request:', JSON.stringify({
+    imageBytes: imageBuf.length,
+    imagePixels: pngDimensions(imageBuf),
+    requestBodyBytes: Buffer.byteLength(body),
+    turns: conversationHistory.length,
+    msSinceLastRequest: lastRequestStartedAt === null ? null : now - lastRequestStartedAt,
+  }));
+  lastRequestStartedAt = now;
+
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   const onExternalAbort = () => controller.abort();
@@ -112,7 +155,7 @@ async function askAboutRegion(imagePath, conversationHistory, { signal: external
         'Content-Type': 'application/json',
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({ model: MODEL_ID, messages }),
+      body,
       signal: controller.signal,
     });
   } catch (err) {
@@ -129,11 +172,16 @@ async function askAboutRegion(imagePath, conversationHistory, { signal: external
     if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort);
   }
 
-  if (response.status === 429) {
-    throw apiError('rate_limit', 'Mistral API rate limit hit.');
-  }
   if (!response.ok) {
     const bodyText = await response.text().catch(() => '');
+    diagLog('non-2xx response:', JSON.stringify({
+      status: response.status,
+      body: bodyText,
+      headers: headersToObject(response.headers),
+    }));
+    if (response.status === 429) {
+      throw apiError('rate_limit', 'Mistral API rate limit hit.');
+    }
     throw apiError(
       'api_error',
       `Mistral API returned HTTP ${response.status}.`,
@@ -147,6 +195,11 @@ async function askAboutRegion(imagePath, conversationHistory, { signal: external
   } catch (err) {
     throw apiError('malformed', 'Mistral API response was not valid JSON.', err);
   }
+  diagLog('2xx response:', JSON.stringify({
+    status: response.status,
+    usage: data?.usage ?? null,
+    rateLimitHeaders: headersToObject(response.headers, RATE_LIMIT_HEADER),
+  }));
 
   const answerText = data?.choices?.[0]?.message?.content;
   if (typeof answerText !== 'string' || answerText.trim() === '') {
