@@ -18,8 +18,11 @@
 // Requires MISTRAL_API_KEY in .env.
 // Run:
 //   node diagnostics/compare_vision_models.js <png-folder> <out.md>
-//        [--models id1,id2,...] [--questions-file questions.txt]
-// questions.txt: one question per line.
+//        [--models id1,id2,...] [--questions-file questions.txt] [--runs N]
+// questions.txt: one question per line. --runs repeats the whole grid N
+// times (run is the outer loop, so a model's repeats are spread out in
+// time rather than back to back). Raw results also go to <out.md>.json,
+// for diagnostics/score_transcriptions.js.
 
 const fs = require('fs');
 const path = require('path');
@@ -32,9 +35,10 @@ const DEFAULT_QUESTIONS = ['What does this image show?', 'Transcribe all text yo
 const SPACING_MS = 2500;
 
 function parseArgs(argv) {
-  const args = { positional: [], models: DEFAULT_MODELS, questions: DEFAULT_QUESTIONS };
+  const args = { positional: [], models: DEFAULT_MODELS, questions: DEFAULT_QUESTIONS, runs: 1 };
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--models') args.models = argv[++i].split(',').map((s) => s.trim()).filter(Boolean);
+    if (argv[i] === '--runs') args.runs = Number(argv[++i]);
+    else if (argv[i] === '--models') args.models = argv[++i].split(',').map((s) => s.trim()).filter(Boolean);
     else if (argv[i] === '--questions-file') {
       args.questions = fs.readFileSync(argv[++i], 'utf8').split('\n').map((s) => s.trim()).filter(Boolean);
     } else args.positional.push(argv[i]);
@@ -75,44 +79,47 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const cell = (s) => String(s ?? '').replace(/\|/g, '\\|').replace(/\r?\n/g, '<br>');
 
 async function main() {
-  const { positional: [folder, outPath], models, questions } = parseArgs(process.argv.slice(2));
-  if (!folder || !outPath || !fs.existsSync(folder)) {
-    console.error('Usage: node diagnostics/compare_vision_models.js <png-folder> <out.md> [--models a,b] [--questions-file f]');
+  const { positional: [folder, outPath], models, questions, runs } = parseArgs(process.argv.slice(2));
+  if (!folder || !outPath || !fs.existsSync(folder) || !(runs >= 1)) {
+    console.error('Usage: node diagnostics/compare_vision_models.js <png-folder> <out.md> [--models a,b] [--questions-file f] [--runs N]');
     process.exit(1);
   }
   const images = fs.readdirSync(folder).filter((f) => f.toLowerCase().endsWith('.png')).sort();
-  console.log(`${images.length} image(s) x ${questions.length} question(s) x ${models.length} model(s)`);
+  console.log(`${runs} run(s) x ${images.length} image(s) x ${questions.length} question(s) x ${models.length} model(s)`);
 
-  const results = []; // { image, pixels, qIndex, model, answer, error, ...lastCall }
-  for (const image of images) {
-    const imagePath = path.join(folder, image);
-    const pixels = pngDimensions(imagePath);
-    for (const [qIndex, question] of questions.entries()) {
-      for (const model of models) {
-        overrideModel = model;
-        lastCall = null;
-        let answer = null;
-        let error = null;
-        try {
-          answer = await askAboutRegion(imagePath, [{ role: 'user', content: question }]);
-        } catch (err) {
-          error = `[${err.code}] ${err.message}`;
+  const results = []; // { run, image, pixels, qIndex, model, answer, error, ...lastCall }
+  for (let run = 1; run <= runs; run++) {
+    for (const image of images) {
+      const imagePath = path.join(folder, image);
+      const pixels = pngDimensions(imagePath);
+      for (const [qIndex, question] of questions.entries()) {
+        for (const model of models) {
+          overrideModel = model;
+          lastCall = null;
+          let answer = null;
+          let error = null;
+          try {
+            answer = await askAboutRegion(imagePath, [{ role: 'user', content: question }]);
+          } catch (err) {
+            error = `[${err.code}] ${err.message}`;
+          }
+          if (!lastCall && !error?.startsWith('[network]')) {
+            throw new Error('fetch wrapper never ran — model override did not apply; aborting');
+          }
+          results.push({ run, image, pixels, qIndex, model, answer, error, ...lastCall });
+          console.log(`run ${run} ${image} q${qIndex + 1} ${model}: ${lastCall?.status} ${lastCall?.promptTokens} prompt tokens, ${lastCall?.latencyMs}ms${error ? ' ' + error : ''}`);
+          await sleep(SPACING_MS);
         }
-        if (!lastCall && !error?.startsWith('[network]')) {
-          throw new Error('fetch wrapper never ran — model override did not apply; aborting');
-        }
-        results.push({ image, pixels, qIndex, model, answer, error, ...lastCall });
-        console.log(`${image} q${qIndex + 1} ${model}: ${lastCall?.status} ${lastCall?.promptTokens} prompt tokens, ${lastCall?.latencyMs}ms${error ? ' ' + error : ''}`);
-        await sleep(SPACING_MS);
       }
     }
   }
+  fs.writeFileSync(outPath + '.json', JSON.stringify({ folder, models, questions, runs, results }, null, 2));
 
   const px = (p) => (p ? `${p.width}x${p.height}` : '?');
   const lines = [
     '# Vision model comparison',
     '',
-    `Run ${new Date().toISOString()} · folder \`${folder}\` · models ${models.map((m) => `\`${m}\``).join(', ')}`,
+    `Run ${new Date().toISOString()} · ${runs} run(s) · folder \`${folder}\` · models ${models.map((m) => `\`${m}\``).join(', ')}`,
     '',
     'Unscored. Contains screen content — do not commit.',
     '',
@@ -121,9 +128,9 @@ async function main() {
     '',
     '## Metrics',
     '',
-    '| image | pixels | q | model | status | prompt_tokens | completion_tokens | latency ms | rate-limit headers |',
-    '|---|---|---|---|---|---|---|---|---|',
-    ...results.map((r) => `| ${cell(r.image)} | ${px(r.pixels)} | ${r.qIndex + 1} | ${r.model} | ${r.status ?? '-'} | ${r.promptTokens ?? '-'} | ${r.completionTokens ?? '-'} | ${r.latencyMs ?? '-'} | ${cell(JSON.stringify(r.rateLimit ?? {}))} |`),
+    '| run | image | pixels | q | model | status | prompt_tokens | completion_tokens | latency ms | rate-limit headers |',
+    '|---|---|---|---|---|---|---|---|---|---|',
+    ...results.map((r) => `| ${r.run} | ${cell(r.image)} | ${px(r.pixels)} | ${r.qIndex + 1} | ${r.model} | ${r.status ?? '-'} | ${r.promptTokens ?? '-'} | ${r.completionTokens ?? '-'} | ${r.latencyMs ?? '-'} | ${cell(JSON.stringify(r.rateLimit ?? {}))} |`),
     '',
     '## Answers',
   ];
@@ -131,11 +138,14 @@ async function main() {
     const first = results.find((r) => r.image === image);
     lines.push('', `### ${image} (${px(first?.pixels)})`);
     for (const [qIndex, question] of questions.entries()) {
-      const row = models.map((m) => {
-        const r = results.find((x) => x.image === image && x.qIndex === qIndex && x.model === m);
-        return cell(r?.error ? `**ERROR** ${r.error}` : r?.answer);
-      });
-      lines.push('', `**Q${qIndex + 1}: ${question}**`, '', `| ${models.join(' | ')} |`, `|${models.map(() => '---').join('|')}|`, `| ${row.join(' | ')} |`);
+      lines.push('', `**Q${qIndex + 1}: ${question}**`, '', `| run | ${models.join(' | ')} |`, `|---|${models.map(() => '---').join('|')}|`);
+      for (let run = 1; run <= runs; run++) {
+        const row = models.map((m) => {
+          const r = results.find((x) => x.run === run && x.image === image && x.qIndex === qIndex && x.model === m);
+          return cell(r?.error ? `**ERROR** ${r.error}` : r?.answer);
+        });
+        lines.push(`| ${run} | ${row.join(' | ')} |`);
+      }
     }
   }
   fs.writeFileSync(outPath, lines.join('\n') + '\n');
