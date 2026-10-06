@@ -142,7 +142,14 @@ async function askAboutRegion(imagePath, conversationHistory, { signal: external
   lastRequestStartedAt = now;
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  // [vision-diag] Our timeout and the external cancel abort the same
+  // controller, so this flag is the only way to tell from the log which
+  // one fired (the turn-3 "Couldn't reach the model" investigation).
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, REQUEST_TIMEOUT_MS);
   const onExternalAbort = () => controller.abort();
   if (externalSignal) {
     if (externalSignal.aborted) controller.abort();
@@ -161,6 +168,15 @@ async function askAboutRegion(imagePath, conversationHistory, { signal: external
       signal: controller.signal,
     });
   } catch (err) {
+    diagLog('fetch failed:', JSON.stringify({
+      elapsedMs: Date.now() - now,
+      name: err.name,
+      message: err.message,
+      causeCode: err.cause?.code ?? null,
+      causeMessage: err.cause?.message ?? null,
+      timedOut,
+      externalAbort: Boolean(externalSignal?.aborted),
+    }));
     // A deliberate external cancel gets its own code, distinct from a real
     // network failure or our own timeout — the caller needs to tell "this
     // was cancelled on purpose" apart from "this actually failed" so it
@@ -177,6 +193,7 @@ async function askAboutRegion(imagePath, conversationHistory, { signal: external
   if (!response.ok) {
     const bodyText = await response.text().catch(() => '');
     diagLog('non-2xx response:', JSON.stringify({
+      elapsedMs: Date.now() - now,
       status: response.status,
       body: bodyText,
       headers: headersToObject(response.headers),
@@ -206,10 +223,13 @@ async function askAboutRegion(imagePath, conversationHistory, { signal: external
   try {
     data = await response.json();
   } catch (err) {
+    diagLog('2xx body not JSON:', JSON.stringify({ elapsedMs: Date.now() - now, name: err.name, message: err.message }));
     throw apiError('malformed', 'Mistral API response was not valid JSON.', err);
   }
   diagLog('2xx response:', JSON.stringify({
+    elapsedMs: Date.now() - now,
     status: response.status,
+    finishReason: data?.choices?.[0]?.finish_reason ?? null,
     usage: data?.usage ?? null,
     rateLimitHeaders: headersToObject(response.headers, RATE_LIMIT_HEADER),
   }));
